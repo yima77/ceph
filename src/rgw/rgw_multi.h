@@ -5,6 +5,7 @@
 #define CEPH_RGW_MULTI_H
 
 #include <map>
+#include <set>
 #include "rgw_xml.h"
 #include "rgw_obj_manifest.h"
 #include "rgw_compression_types.h"
@@ -28,10 +29,13 @@ struct RGWUploadPartInfo {
   RGWObjManifest manifest;
   RGWCompressionInfo cs_info;
 
+  // Previous part obj prefixes. Recorded here for later cleanup.
+  std::set<std::string> past_prefixes;
+
   RGWUploadPartInfo() : num(0), size(0) {}
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(4, 2, bl);
+    ENCODE_START(5, 2, bl);
     encode(num, bl);
     encode(size, bl);
     encode(etag, bl);
@@ -39,10 +43,11 @@ struct RGWUploadPartInfo {
     encode(manifest, bl);
     encode(cs_info, bl);
     encode(accounted_size, bl);
+    encode(past_prefixes, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START_LEGACY_COMPAT_LEN(4, 2, 2, bl);
+    DECODE_START_LEGACY_COMPAT_LEN(5, 2, 2, bl);
     decode(num, bl);
     decode(size, bl);
     decode(etag, bl);
@@ -54,6 +59,9 @@ struct RGWUploadPartInfo {
       decode(accounted_size, bl);
     } else {
       accounted_size = size;
+    }
+    if (struct_v >= 5) {
+      decode(past_prefixes, bl);
     }
     DECODE_FINISH(bl);
   }

@@ -486,11 +486,41 @@ int MultipartObjectProcessor::complete(size_t accounted_size,
     return r;
   }
 
-  encode(info, bl);
-
   std::unique_ptr<rgw::sal::Object> meta_obj =
     head_obj->get_bucket()->get_object(rgw_obj_key(mp.get_meta(), std::string(), RGW_OBJ_NS_MULTIPART));
   meta_obj->set_in_extra_data(true);
+
+  std::map<string, bufferlist> parts_map;
+  rgw_raw_obj meta_raw_obj;
+  dynamic_cast<rgw::sal::RadosObject*>(meta_obj.get())->get_raw_obj(&meta_raw_obj);
+
+  r = meta_obj->omap_get_vals_by_keys(dpp, meta_raw_obj.oid, {p}, &parts_map);
+  if (r < 0 and r != -ENOENT) {
+    ldpp_dout(dpp, 1) << "ERROR: failed to get omap of key " << p << " : " << r << dendl;
+    return r;
+  } else {
+    RGWUploadPartInfo past_info;
+    auto part_info_bl = parts_map[p];
+    if (part_info_bl.length() > 0) {
+      auto pitr = part_info_bl.cbegin();
+      try {
+        decode(past_info, pitr);
+        info.past_prefixes.merge(past_info.past_prefixes);
+        info.past_prefixes.insert(past_info.manifest.get_prefix());
+        // Past prefixes indicate leaked objects that are to be removed.
+        // Make sure the current prefix isn't one of them.
+        if (info.past_prefixes.find(manifest.get_prefix()) != info.past_prefixes.end()) {
+          ldpp_dout(dpp, 1) << "ERROR: prefix " << manifest.get_prefix() << " was used before" << dendl;
+          return -EINVAL;
+        }
+      } catch (buffer::malformed_input& e) {
+        ldpp_dout(dpp, 0) << "ERROR: Fail to decode RGWUploadPartInfo for " << mp.get_meta() << dendl;
+        return -EINVAL;
+      }
+    }
+  }
+
+  encode(info, bl);
 
   r = meta_obj->omap_set_val_by_key(dpp, p, bl, true, null_yield);
   if (r < 0) {
