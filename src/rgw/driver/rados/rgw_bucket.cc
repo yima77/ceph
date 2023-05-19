@@ -818,6 +818,26 @@ int RGWBucketAdminOp::check_index(rgw::sal::Driver* driver, RGWBucketAdminOpStat
   return 0;
 }
 
+int RGWBucketAdminOp::purge_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state,
+			           optional_yield y, const DoutPrefixProvider *dpp, 
+                                   bool bypass_gc, bool keep_index_consistent)
+{
+  std::unique_ptr<rgw::sal::Bucket> bucket;
+  std::unique_ptr<rgw::sal::User> user = driver->get_user(op_state.get_user_id());
+
+  int ret = driver->get_bucket(dpp, user.get(), user->get_tenant(), op_state.get_bucket_name(),
+			      &bucket, y);
+  if (ret < 0)
+    return ret;
+
+  if (bypass_gc)
+    ret = bucket->purge_bucket_bypass_gc(op_state.get_max_aio(), keep_index_consistent, y, dpp);
+  else
+    ret = bucket->purge_bucket(dpp, op_state.will_delete_children(), y);
+
+  return ret;
+}
+
 int RGWBucketAdminOp::remove_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state,
 				    optional_yield y, const DoutPrefixProvider *dpp, 
                                     bool bypass_gc, bool keep_index_consistent)

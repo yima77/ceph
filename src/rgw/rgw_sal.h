@@ -641,6 +641,13 @@ class Bucket {
     virtual Attrs& get_attrs(void) = 0;
     /** Set the cached attributes on this bucket */
     virtual int set_attrs(Attrs a) = 0;
+    /** Purge this bucket's content from the backing store */
+    virtual int purge_bucket(const DoutPrefixProvider* dpp, bool delete_children, optional_yield y) { return -EOPNOTSUPP; }
+    /** Remove this bucket's content, bypassing garbage collection.  May be removed */
+    virtual int purge_bucket_bypass_gc(int concurrent_max, bool
+				       keep_index_consistent,
+                                       optional_yield y, const
+                                       DoutPrefixProvider *dpp) { return -EOPNOTSUPP; }
     /** Remove this bucket from the backing store */
     virtual int remove_bucket(const DoutPrefixProvider* dpp, bool delete_children, bool forward_to_master, req_info* req_info, optional_yield y) = 0;
     /** Remove this bucket, bypassing garbage collection.  May be removed */

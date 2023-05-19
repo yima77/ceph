@@ -369,6 +369,8 @@ public:
   static int check_index(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher, optional_yield y, const DoutPrefixProvider *dpp);
 
+  static int purge_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, optional_yield y,
+                          const DoutPrefixProvider *dpp, bool bypass_gc = false, bool keep_index_consistent = true);
   static int remove_bucket(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, optional_yield y,
 			   const DoutPrefixProvider *dpp, bool bypass_gc = false, bool keep_index_consistent = true);
   static int remove_object(rgw::sal::Driver* driver, RGWBucketAdminOpState& op_state, const DoutPrefixProvider *dpp);

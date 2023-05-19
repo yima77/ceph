@@ -401,11 +401,9 @@ int RadosUser::verify_mfa(const std::string& mfa_str, bool* verified,
 
 RadosBucket::~RadosBucket() {}
 
-int RadosBucket::remove_bucket(const DoutPrefixProvider* dpp,
-			       bool delete_children,
-			       bool forward_to_master,
-			       req_info* req_info,
-			       optional_yield y)
+int RadosBucket::purge_bucket(const DoutPrefixProvider* dpp,
+			      bool delete_children,
+			      optional_yield y)
 {
   int ret;
 
@@ -459,6 +457,21 @@ int RadosBucket::remove_bucket(const DoutPrefixProvider* dpp,
      ldout(store->ctx(), 1) << "WARNING: failed sync user stats before bucket delete. ret=" <<  ret << dendl;
   }
 
+  return ret;
+}
+
+int RadosBucket::remove_bucket(const DoutPrefixProvider* dpp,
+			       bool delete_children,
+			       bool forward_to_master,
+			       req_info* req_info,
+			       optional_yield y)
+{
+  int ret = purge_bucket(dpp, delete_children, y);
+
+  if (ret < 0) {
+    return ret;
+  }
+
   RGWObjVersionTracker ot;
 
   // if we deleted children above we will force delete, as any that
@@ -500,10 +513,10 @@ int RadosBucket::remove_bucket(const DoutPrefixProvider* dpp,
   return ret;
 }
 
-int RadosBucket::remove_bucket_bypass_gc(int concurrent_max, bool
-					 keep_index_consistent,
-					 optional_yield y, const
-					 DoutPrefixProvider *dpp)
+int RadosBucket::purge_bucket_bypass_gc(int concurrent_max, bool
+					keep_index_consistent,
+					optional_yield y, const
+					DoutPrefixProvider *dpp)
 {
   int ret;
   map<RGWObjCategory, RGWStorageStats> stats;
@@ -617,9 +630,23 @@ int RadosBucket::remove_bucket_bypass_gc(int concurrent_max, bool
     return ret;
   }
 
-  sync_user_stats(dpp, y);
+  ret = sync_user_stats(dpp, y);
   if (ret < 0) {
      ldpp_dout(dpp, 1) << "WARNING: failed sync user stats before bucket delete. ret=" <<  ret << dendl;
+  }
+
+  return ret;
+}
+
+int RadosBucket::remove_bucket_bypass_gc(int concurrent_max, bool
+					 keep_index_consistent,
+					 optional_yield y, const
+					 DoutPrefixProvider *dpp)
+{
+  int ret = purge_bucket_bypass_gc(concurrent_max, keep_index_consistent, y, dpp);
+  if (ret < 0) {
+     ldpp_dout(dpp, 1) << "ERROR: failed to purge content bypass_gc. ret=" <<  ret << dendl;
+     return ret;
   }
 
   RGWObjVersionTracker objv_tracker;

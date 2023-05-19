@@ -155,6 +155,7 @@ void usage()
   cout << "  bucket unlink              unlink bucket from specified user\n";
   cout << "  bucket stats               returns bucket statistics\n";
   cout << "  bucket rm                  remove bucket\n";
+  cout << "  bucket purge               purge bucket content\n";
   cout << "  bucket check               check bucket index\n";
   cout << "  bucket chown               link bucket to specified user and update its object ACLs\n";
   cout << "  bucket reshard             reshard bucket\n";
@@ -664,6 +665,7 @@ enum class OPT {
   BUCKET_SYNC_DISABLE,
   BUCKET_SYNC_ENABLE,
   BUCKET_RM,
+  BUCKET_PURGE,
   BUCKET_REWRITE,
   BUCKET_RESHARD,
   BUCKET_CHOWN,
@@ -878,6 +880,7 @@ static SimpleCmd::Commands all_cmds = {
   { "bucket sync disable", OPT::BUCKET_SYNC_DISABLE },
   { "bucket sync enable", OPT::BUCKET_SYNC_ENABLE },
   { "bucket rm", OPT::BUCKET_RM },
+  { "bucket purge", OPT::BUCKET_PURGE },
   { "bucket rewrite", OPT::BUCKET_REWRITE },
   { "bucket reshard", OPT::BUCKET_RESHARD },
   { "bucket chown", OPT::BUCKET_CHOWN },
@@ -8284,6 +8287,16 @@ next:
     } else {
       RGWBucketAdminOp::check_index(driver, bucket_op, stream_flusher, null_yield, dpp());
     }
+  }
+
+  if (opt_cmd == OPT::BUCKET_PURGE) {
+    if (!yes_i_really_mean_it) {
+      cerr << "This command deletes everything within the bucket." << std::endl
+      << "do you really mean it? (requires --yes-i-really-mean-it)" << std::endl;
+      return 1;
+    }
+    bucket_op.set_delete_children(true);
+    RGWBucketAdminOp::purge_bucket(driver, bucket_op, null_yield, dpp(), bypass_gc, true);
   }
 
   if (opt_cmd == OPT::BUCKET_RM) {
