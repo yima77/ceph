@@ -142,6 +142,17 @@ int RGWSI_User_RADOS::read_user_info(RGWSI_MetaBackend::Context *ctx,
     }
     if (!iter.end()) {
       decode(*info, iter);
+      ldpp_dout(dpp, 0) << "NOTE: RGWSI_User_RADOS::read_user_info(): should update " << info->should_update << dendl;
+      if (info->should_update) {
+        real_time mtime = pmtime ? *pmtime : real_clock::now();
+
+        ret = store_user_info(ctx, *info, info, objv_tracker, mtime, false, pattrs, y, dpp);
+        if (ret < 0) {
+          ldpp_dout(dpp, 0) << "ERROR: fail to store user info when it should be updated: " << ret << dendl;
+        } else {
+          info->should_update = false;
+        }
+      }
     }
   } catch (buffer::error& err) {
     ldpp_dout(dpp, 0) << "ERROR: failed to decode user info, caught buffer::error" << dendl;
@@ -270,7 +281,7 @@ public:
     const bool renamed = old_info && old_info->user_id != info.user_id;
     for (auto iter = info.access_keys.begin(); iter != info.access_keys.end(); ++iter) {
       auto& k = iter->second;
-      if (old_info && old_info->access_keys.count(iter->first) != 0 && !renamed)
+      if (old_info && old_info->access_keys.count(iter->first) != 0 && !renamed && !info.should_update)
         continue;
 
       ret = rgw_put_system_obj(dpp, obj_ctx, svc.zone->get_zone_params().user_keys_pool, k.id,
@@ -374,16 +385,19 @@ int RGWSI_User_RADOS::store_user_info(RGWSI_MetaBackend::Context *ctx,
 
   int r = op.prepare(dpp);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "Prepare failed: " << r << dendl;
     return r;
   }
 
   r = op.put(dpp);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "Put failed: " << r << dendl;
     return r;
   }
 
   r = op.complete(dpp);
   if (r < 0) {
+    ldpp_dout(dpp, 0) << "Complete failed: " << r << dendl;
     return r;
   }
 

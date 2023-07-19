@@ -4260,6 +4260,11 @@ int main(int argc, const char **argv)
     bool need_cache = readonly_ops_list.find(opt_cmd) == readonly_ops_list.end();
     bool need_gc = (gc_ops_list.find(opt_cmd) != gc_ops_list.end()) && !bypass_gc;
 
+    // Initialize before open storage store
+    rgw::secret::init_encrypter(g_ceph_context, 
+                                g_conf().get_val<bool>("rgw_secret_encrypt_enabled"),
+                                g_conf().get_val<std::string>("rgw_secret_encrypt_key_file"));
+
     if (raw_storage_op) {
       store = StoreManager::get_raw_storage(dpp(), g_ceph_context, "rados");
     } else {

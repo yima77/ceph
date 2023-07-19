@@ -2876,6 +2876,8 @@ void RGWAccessKey::dump(Formatter *f) const
 {
   encode_json("access_key", id, f);
   encode_json("secret_key", key, f);
+  encode_json("secret_key_encrypted", key_encrypted, f);
+  encode_json("encrypt_key_id", encrypt_key_id, f);
   encode_json("subuser", subuser, f);
 }
 
@@ -2897,11 +2899,15 @@ void RGWAccessKey::dump(Formatter *f, const string& user, bool swift) const
     encode_json("access_key", id, f);
   }
   encode_json("secret_key", key, f);
+  encode_json("secret_key_encrypted", key_encrypted, f);
+  encode_json("encrypt_key_id", encrypt_key_id, f);
 }
 
 void RGWAccessKey::decode_json(JSONObj *obj) {
   JSONDecoder::decode_json("access_key", id, obj, true);
   JSONDecoder::decode_json("secret_key", key, obj, true);
+  JSONDecoder::decode_json("secret_key_encrypted", key_encrypted, obj, false);
+  JSONDecoder::decode_json("encrypt_key_id", encrypt_key_id, obj, false);
   if (!JSONDecoder::decode_json("subuser", subuser, obj)) {
     string user;
     JSONDecoder::decode_json("user", user, obj);
@@ -2926,6 +2932,8 @@ void RGWAccessKey::decode_json(JSONObj *obj, bool swift) {
     }
   }
   JSONDecoder::decode_json("secret_key", key, obj, true);
+  JSONDecoder::decode_json("secret_key_encrypted", key_encrypted, obj, false);
+  JSONDecoder::decode_json("encrypt_key_id", encrypt_key_id, obj, false);
 }
 
 void RGWStorageStats::dump(Formatter *f) const

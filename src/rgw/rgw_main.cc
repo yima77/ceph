@@ -368,6 +368,11 @@ int radosgw_Main(int argc, const char **argv)
   }
 #endif
 
+  // Initialize before storage store is open
+  rgw::secret::init_encrypter(g_ceph_context, 
+                              g_conf().get_val<bool>("rgw_secret_encrypt_enabled"),
+                              g_conf().get_val<std::string>("rgw_secret_encrypt_key_file"));
+
   rgw::sal::Store* store =
     StoreManager::get_storage(&dp, g_ceph_context,
 				 rgw_store,

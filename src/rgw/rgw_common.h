@@ -20,6 +20,7 @@
 #include <string_view>
 #include <atomic>
 #include <unordered_map>
+#include <algorithm>
 
 #include "common/ceph_crypto.h"
 #include "common/random_string.h"
@@ -41,6 +42,7 @@
 #include "include/rados/librados.hpp"
 #include "rgw_public_access.h"
 #include "common/tracer.h"
+#include "rgw_secret_encryption.h"
 
 namespace ceph {
   class Formatter;
@@ -477,7 +479,10 @@ class JSONObj;
 
 struct RGWAccessKey {
   std::string id; // AccessKey
-  std::string key; // SecretKey
+  std::string key; // SecretKey in clear
+  std::string key_encrypted; // SecretKey encrypted
+  uint32_t encrypt_key_id = 0; // ID of the key that encrypts SecretKey
+  bool should_reencrypt = false; // Should update encrypted key.
   std::string subuser;
 
   RGWAccessKey() {}
@@ -485,19 +490,40 @@ struct RGWAccessKey {
     : id(std::move(_id)), key(std::move(_key)) {}
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(2, 2, bl);
+    std::string key_encrypted_for_encode;
+    uint32_t encrypt_key_id_for_encode;
+
+    ENCODE_START(3, 2, bl);
     encode(id, bl);
-    encode(key, bl);
+    std::tie(encrypt_key_id_for_encode, key_encrypted_for_encode) = rgw::secret::encrypter()->encrypt(id, key);
+    encode(key_encrypted_for_encode, bl);
+    encode(encrypt_key_id_for_encode, bl);
     encode(subuser, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-     DECODE_START_LEGACY_COMPAT_LEN_32(2, 2, 2, bl);
-     decode(id, bl);
-     decode(key, bl);
-     decode(subuser, bl);
-     DECODE_FINISH(bl);
+    DECODE_START_LEGACY_COMPAT_LEN_32(3, 2, 2, bl);
+    decode(id, bl);
+    if (struct_v > 2) {
+      decode(key_encrypted, bl);
+      decode(encrypt_key_id, bl);
+      bool success;
+      uint32_t new_key_id;
+      std::tie(success, new_key_id, key) = rgw::secret::encrypter()->decrypt(encrypt_key_id, id, key_encrypted);
+      if (success && 
+          (new_key_id > encrypt_key_id || 
+          (new_key_id == 0 && encrypt_key_id > 0))) {
+        // Key is rotated and re-encryption should be done when
+        // 1. New suggested key ID is greater than the current key ID, i.e. key rotation or feature is enabled.
+        // 2. New suggested key ID is 0 (no encryption) while the current one isn't (encryption), i.e. feature is disabled
+        should_reencrypt = true;
+      }
+    } else {
+      decode(key, bl);
+    }
+    decode(subuser, bl);
+    DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
   void dump_plain(Formatter *f) const;
@@ -755,6 +781,7 @@ struct RGWUserInfo
   uint32_t type;
   std::set<std::string> mfa_ids;
   std::string assumed_role_arn;
+  bool should_update = false;
 
   RGWUserInfo()
     : suspended(0),
@@ -852,6 +879,8 @@ struct RGWUserInfo
       user_id.id = access_key;
     if (struct_v >= 6) {
       decode(access_keys, bl);
+      should_update = should_update || std::any_of(access_keys.cbegin(), access_keys.cend(), [](const decltype(access_keys)::value_type& k) { return k.second.should_reencrypt; });
+
       decode(subusers, bl);
     }
     suspended = 0;
