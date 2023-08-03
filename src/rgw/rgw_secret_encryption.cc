@@ -39,6 +39,7 @@ public:
     encrypt_key_file(encrypt_key_file),
     curr_db(std::make_shared<RGWEncryptKeyMap>())
   {
+    ldout(cct, 1)  << "Create secret encrypter with enablement " << enabled << dendl;
     reload_keys(0);
   }
 

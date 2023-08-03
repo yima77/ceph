@@ -3406,15 +3406,6 @@ options:
   - rgw
   flags:
   - startup
-- name: rgw_secret_encrypt_min_reload_interval_sec
-  type: uint
-  level: advanced
-  desc: Minimum interval in seconds to reload encrypt keys.
-  default: 60
-  services:
-  - rgw
-  flags:
-  - startup
 - name: rgw_secret_encrypt_key_file
   type: str
   level: advanced

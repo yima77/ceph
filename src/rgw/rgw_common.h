@@ -808,12 +808,6 @@ struct RGWUserInfo
      encode((uint64_t)0, bl); // old auid
      std::string access_key;
      std::string secret_key;
-     if (!access_keys.empty()) {
-       std::map<std::string, RGWAccessKey>::const_iterator iter = access_keys.begin();
-       const RGWAccessKey& k = iter->second;
-       access_key = k.id;
-       secret_key = k.key;
-     }
      encode(access_key, bl);
      encode(secret_key, bl);
      encode(display_name, bl);
@@ -860,12 +854,6 @@ struct RGWUserInfo
      std::string secret_key;
     decode(access_key, bl);
     decode(secret_key, bl);
-    if (struct_v < 6) {
-      RGWAccessKey k;
-      k.id = access_key;
-      k.key = secret_key;
-      access_keys[access_key] = k;
-    }
     decode(display_name, bl);
     decode(user_email, bl);
     /* We populate swift_keys map later nowadays, but we have to decode. */
