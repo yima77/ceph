@@ -44,6 +44,7 @@
 #include "rgw_kmip_client.h"
 #include "rgw_kmip_client_impl.h"
 #include "rgw_perf_counters.h"
+#include "rgw_secret_encryption.h"
 #ifdef WITH_RADOSGW_AMQP_ENDPOINT
 #include "rgw_amqp.h"
 #endif
@@ -367,6 +368,11 @@ int radosgw_Main(int argc, const char **argv)
     rgw_store = "dbstore";
   }
 #endif
+
+  // Initialize before storage store is open
+  rgw::secret::init_encrypter(g_ceph_context,
+                              g_conf().get_val<bool>("rgw_secret_encrypt_enabled"),
+                              g_conf().get_val<std::string>("rgw_secret_encrypt_key_file"));
 
   rgw::sal::Store* store =
     StoreManager::get_storage(&dp, g_ceph_context,

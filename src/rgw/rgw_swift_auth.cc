@@ -505,7 +505,7 @@ static int build_token(const string& swift_user,
 
 }
 
-static int encode_token(CephContext *cct, string& swift_user, string& key,
+static int encode_token(CephContext *cct, const string& swift_user, const string& key,
 			bufferlist& bl)
 {
   const auto nonce = ceph::util::generate_random_number<uint64_t>();

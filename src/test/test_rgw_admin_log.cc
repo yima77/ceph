@@ -368,7 +368,7 @@ int get_creds(string& json, string& creds) {
     RGWAccessKey _k = it->second;
     /*cout << "accesskeys [ " << it->first << " ] = " << 
       "{ " << _k.id << ", " << _k.key << ", " << _k.subuser << "}" << std::endl;*/
-    creds.append(it->first + string(":") + _k.key);
+    creds.append(it->first + string(":") + (std::string)(_k.key));
     break;
   }
   return 0;

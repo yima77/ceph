@@ -20,6 +20,8 @@
 #include <string_view>
 #include <atomic>
 #include <unordered_map>
+#include <set>
+#include <algorithm>
 
 #include "common/ceph_crypto.h"
 #include "common/random_string.h"
@@ -475,9 +477,111 @@ enum http_op {
 class RGWAccessControlPolicy;
 class JSONObj;
 
+// C++20's ends_with would be helpful.
+struct HostEndsWith {
+  bool operator()(const std::string& lhs, const std::string& rhs) const {
+    if (rhs.size() > lhs.size()) return not std::equal(lhs.rbegin(), lhs.rend(), rhs.rbegin());
+    return not std::equal(rhs.rbegin(), rhs.rend(), lhs.rbegin());
+  }
+};
+
+class RGWSecretKey {
+  std::string key_for_storage;
+  std::string key_for_sign;
+  std::string key_for_show;
+  std::set<std::string, HostEndsWith> enforced_hosts;
+  std::set<std::string> enforced_zones;
+  uint32_t encrypt_key_id = 0;
+  bool need_update = false;
+
+  void process_key(const std::string& key);
+
+  std::string enforcement_part() const;
+
+public:
+  RGWSecretKey(const char *key = "") : RGWSecretKey(std::string(key)) {}
+
+  RGWSecretKey(const std::string &key) {
+    process_key(key);
+  }
+
+  RGWSecretKey& operator=(const char *new_key) {
+    return (*this)=(std::string(new_key));
+  }
+
+  RGWSecretKey& operator=(const std::string &new_key) {
+    process_key(new_key);
+    return *this;
+  }
+
+  bool authorize(const std::string &zone, const std::string& hostname) const;
+
+  bool empty() const {
+    return key_for_sign.empty();
+  }
+
+  bool should_update() const { return need_update; }
+
+  void clear() {
+    key_for_storage.clear();
+    key_for_sign.clear();
+    key_for_show.clear();
+    enforced_hosts.clear();
+    enforced_zones.clear();
+    encrypt_key_id = 0;
+    need_update = false;
+  }
+
+  bool operator==(const RGWSecretKey &other_key) const {
+    return key_for_storage == other_key.key_for_storage;
+  }
+
+  bool operator!=(const RGWSecretKey &other_key) const {
+    return key_for_storage != other_key.key_for_storage;
+  }
+
+  int compare(const RGWSecretKey &other_key) const {
+    return key_for_storage.compare(other_key.key_for_storage);
+  }
+
+  void encode(bufferlist& bl) const {
+    using ::ceph::encode;
+    encode(key_for_storage, bl);
+  }
+
+  void decode(bufferlist::const_iterator& bl) {
+    using ::ceph::decode;
+    std::string decoded_key;
+    decode(decoded_key, bl);
+    process_key(decoded_key);
+  }
+
+  operator std::string_view() const { 
+    return key_for_sign;
+  }
+
+  operator std::string() const { 
+    return key_for_sign;
+  }
+
+  operator const std::string&() const { 
+    return key_for_sign;
+  }
+
+  const std::string& data() const {
+    return key_for_show;
+  }
+
+  void dump(Formatter *f) const;
+  void decode_json(JSONObj *obj);
+};
+WRITE_CLASS_ENCODER(RGWSecretKey)
+
+std::ostream &operator<<(std::ostream &os, RGWSecretKey const &key);
+
 struct RGWAccessKey {
   std::string id; // AccessKey
-  std::string key; // SecretKey
+  RGWSecretKey key; // SecretKey
   std::string subuser;
 
   RGWAccessKey() {}
@@ -499,6 +603,7 @@ struct RGWAccessKey {
      decode(subuser, bl);
      DECODE_FINISH(bl);
   }
+
   void dump(Formatter *f) const;
   void dump_plain(Formatter *f) const;
   void dump(Formatter *f, const std::string& user, bool swift) const;
@@ -755,6 +860,7 @@ struct RGWUserInfo
   uint32_t type;
   std::set<std::string> mfa_ids;
   std::string assumed_role_arn;
+  bool should_update = false;
 
   RGWUserInfo()
     : suspended(0),
@@ -852,6 +958,7 @@ struct RGWUserInfo
       user_id.id = access_key;
     if (struct_v >= 6) {
       decode(access_keys, bl);
+      should_update = should_update || std::any_of(access_keys.cbegin(), access_keys.cend(), [](const decltype(access_keys)::value_type& k) { return k.second.key.should_update(); });
       decode(subusers, bl);
     }
     suspended = 0;

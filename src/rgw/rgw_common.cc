@@ -29,6 +29,7 @@
 #include "rgw_crypt_sanitize.h"
 #include "rgw_bucket_sync.h"
 #include "rgw_sync_policy.h"
+#include "rgw_secret_encryption.h"
 
 #include "services/svc_zone.h"
 
@@ -2362,6 +2363,18 @@ struct rgw_pool;
 struct rgw_placement_rule;
 class RGWUserCaps;
 
+void encode_json(const char *name, const RGWSecretKey &key, ceph::Formatter *f)
+{
+  encode_json(name, key.data(), f);
+}
+
+void decode_json_obj(RGWSecretKey &key, JSONObj *obj)
+{
+  std::string key_val;
+  decode_json_obj(key_val, obj);
+  key = key_val;
+}
+
 void decode_json_obj(rgw_pool& pool, JSONObj *obj)
 {
   string s;
@@ -2860,6 +2873,110 @@ void RGWSubUser::decode_json(JSONObj *obj)
   string perm_str;
   JSONDecoder::decode_json("permissions", perm_str, obj);
   perm_mask = str_to_perm(perm_str);
+}
+
+std::string RGWSecretKey::enforcement_part() const
+{
+  std::string enforcement;
+  for (auto& host : enforced_hosts) {
+    enforcement += (enforcement.empty() ? "" : ",") + host;
+  }
+  for (auto& zone : enforced_zones) {
+    enforcement += (enforcement.empty() ? "" : ",");
+    enforcement += "@" + zone;
+  }
+  return enforcement;
+}
+
+void RGWSecretKey::process_key(const std::string& key)
+{
+  clear();
+  auto pos = key.find(':');
+  std::string key_part;
+  if (pos != std::string::npos) {
+    key_part = key.substr(0, pos);
+    do {
+      ++pos;
+      auto next_pos = key.find(',', pos);
+      std::string token;
+      if (next_pos != std::string::npos) {
+        token = key.substr(pos, next_pos - pos);
+      } else {
+        token = key.substr(pos);
+      }
+      if (token[0] == '@') {
+        dout(0) << "Enforced zone " << token.substr(1) << dendl;
+        enforced_zones.insert(token.substr(1));
+      } else if (token[0] == '#') {
+        dout(0) << "Encrypt key id " << token.substr(1) << dendl;
+        encrypt_key_id = std::stoi(token.substr(1));
+      } else {
+        dout(0) << "Enforced host " << token << dendl;
+        enforced_hosts.insert(token);
+      }
+      pos = next_pos;
+    } while (pos != std::string::npos);
+  } else {
+    key_part = key;
+  }
+  bool success;
+  uint32_t new_key_id;
+  std::string decrypted_key;
+  std::tie(success, new_key_id, decrypted_key) = rgw::secret::encrypter()->decrypt(encrypt_key_id, key_part);
+  if (!success) {
+    dout(0) << "WARNING: fail to decrypt secret key with key id " << encrypt_key_id << dendl;
+    key_for_storage = key_for_show = key_for_sign = key; // Write the same back
+  } else {
+    key_for_show = key_for_sign = decrypted_key;
+    auto enforcement = enforcement_part();
+    if (!enforcement.empty()) {
+      key_for_show += ":" + enforcement;
+    }
+    if (new_key_id != encrypt_key_id) {
+      uint32_t key_used = 0;
+      std::string key_encrypted;
+      std::tie(key_used, key_encrypted) = rgw::secret::encrypter()->encrypt(decrypted_key);
+      key_for_storage = key_encrypted + ":#" + std::to_string(key_used);
+      if (!enforcement.empty()) {
+        key_for_storage += "," + enforcement;
+      }
+      need_update = true;
+    } else {
+      key_for_storage = key; // Remain the same
+    }
+  }
+  dout(0) << "Existing key id " << encrypt_key_id << " new key id " << new_key_id << " new key data " << key_for_storage << " key_for_sign " << key_for_sign << " key_for_show " << key_for_show << dendl;
+}
+
+bool RGWSecretKey::authorize(const std::string &zone, const std::string &hostname) const
+{
+  if (!enforced_zones.empty() && 
+      enforced_zones.find(zone) == enforced_zones.end()) {
+    return false;
+  }
+  if (!hostname.empty() && 
+      !enforced_hosts.empty() &&
+      enforced_hosts.find(hostname) == enforced_hosts.end()) {
+    return false;
+  }
+  return true;
+}
+
+void RGWSecretKey::dump(Formatter *f) const
+{
+  dout(0) << "Dump secret key: " << key_for_storage << " for_show " << key_for_show << dendl;
+  f->write_raw_data(key_for_show.c_str());
+}
+
+void RGWSecretKey::decode_json(JSONObj *obj) 
+{
+  (*this) = obj->get_data();
+}
+
+std::ostream &operator<<(std::ostream &os, RGWSecretKey const &key)
+{
+  dout(0) << "Secret key output via ostream: " << key << dendl;
+  return os << key.data();
 }
 
 void RGWAccessKey::generate_test_instances(list<RGWAccessKey*>& o)

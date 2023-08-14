@@ -6085,8 +6085,16 @@ rgw::auth::s3::LocalEngine::authenticate(
   }
   const RGWAccessKey& k = iter->second;
 
+  auto hostname = s ? s->info.env->get("HTTP_HOST", "") : "";
+  ldpp_dout(dpp, 0) << "Check hostname " << hostname << dendl;
+  if (!k.key.authorize(store->get_zone()->get_name(), hostname)) {
+    ldpp_dout(dpp, 0) << "ERROR: access key not allowed in this zone [" << store->get_zone()->get_name() << "] or with this hostname [" << hostname << "]" << dendl;
+    return result_t::deny(-EPERM);
+  }
+
+  ldpp_dout(dpp, 0) << "Check signature with secret key " << std::string(k.key) << dendl;
   const VersionAbstractor::server_signature_t server_signature = \
-    signature_factory(cct, k.key, string_to_sign);
+    signature_factory(cct, std::string(k.key), string_to_sign);
   auto compare = signature.compare(server_signature);
 
   ldpp_dout(dpp, 15) << "string_to_sign="
@@ -6102,7 +6110,7 @@ rgw::auth::s3::LocalEngine::authenticate(
 
   auto apl = apl_factory->create_apl_local(cct, s, user->get_info(),
                                            k.subuser, std::nullopt, access_key_id);
-  return result_t::grant(std::move(apl), completer_factory(k.key));
+  return result_t::grant(std::move(apl), completer_factory(std::string(k.key)));
 }
 
 rgw::auth::RemoteApplier::AuthInfo
