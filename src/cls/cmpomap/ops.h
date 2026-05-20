@@ -158,33 +158,33 @@ inline void decode(cmp_rm_keys2_op& o, ceph::bufferlist::const_iterator& bl)
   DECODE_FINISH(bl);
 }
 
-struct cmp_update_op {
+struct cmp_incr_op {
   Op comparison;
   ComparisonMap cmp_values;
-  int64_t update;
+  int64_t incr;
   std::optional<ceph::bufferlist> default_value;
-  KeySet update_keys;
+  KeySet incr_keys;
 };
 
-inline void encode(const cmp_update_op& o, ceph::bufferlist& bl, uint64_t f=0)
+inline void encode(const cmp_incr_op& o, ceph::bufferlist& bl, uint64_t f=0)
 {
   ENCODE_START(1, 1, bl);
   encode(o.comparison, bl);
   encode(o.cmp_values, bl);
-  encode(o.update, bl);
+  encode(o.incr, bl);
   encode(o.default_value, bl);
-  encode(o.update_keys, bl);
+  encode(o.incr_keys, bl);
   ENCODE_FINISH(bl);
 }
 
-inline void decode(cmp_update_op& o, ceph::bufferlist::const_iterator& bl)
+inline void decode(cmp_incr_op& o, ceph::bufferlist::const_iterator& bl)
 {
   DECODE_START(1, bl);
   decode(o.comparison, bl);
   decode(o.cmp_values, bl);
-  decode(o.update, bl);
+  decode(o.incr, bl);
   decode(o.default_value, bl);
-  decode(o.update_keys, bl);
+  decode(o.incr_keys, bl);
   DECODE_FINISH(bl);
 }
 
@@ -197,7 +197,7 @@ constexpr auto cmp_set_vals = ClsMethod<RdWrTag, ClassId>("cmp_set_vals");
 constexpr auto cmp_set_vals2 = ClsMethod<RdWrTag, ClassId>("cmp_set_vals2");
 constexpr auto cmp_rm_keys = ClsMethod<RdWrTag, ClassId>("cmp_rm_keys");
 constexpr auto cmp_rm_keys2 = ClsMethod<RdWrTag, ClassId>("cmp_rm_keys2");
-constexpr auto cmp_update = ClsMethod<RdWrTag, ClassId>("cmp_update");
+constexpr auto cmp_incr = ClsMethod<RdWrTag, ClassId>("cmp_incr");
 }
 
 } // namespace cls::cmpomap

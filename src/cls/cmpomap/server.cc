@@ -84,14 +84,10 @@ static int compare_all_values_by_mode(Mode mode, Op op,
                                       std::optional<ceph::bufferlist> default_value)
 {
   auto v = values.cbegin();
-  auto i = input_values.cbegin();
-  while (i != input_values.end()) {
-    auto& key = i->first;
-    bufferlist input;
+  for (const auto& [key, input] : input_values) {
     bufferlist value;
     if (v != values.end() && v->first == key) {
       value = std::move(v->second);
-      input = std::move(i->second);
       CLS_LOG(20, "%s() comparing key=%s mode=%d op=%d", __func__,
               key.c_str(), (int)mode, (int)op);
       ++v;
@@ -101,9 +97,7 @@ static int compare_all_values_by_mode(Mode mode, Op op,
     } else {
       CLS_LOG(10, "%s() missing key=%s with default", __func__, key.c_str());
       value = *default_value;
-      input = std::move(i->second);
     }
-    ++i;
 
     int r = compare_values_by_mode(mode, op, input, value);
     if (r == -EIO) {
@@ -413,9 +407,9 @@ static int cmp_rm_keys2(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   return 0;
 }
 
-static int cmp_update(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+static int cmp_incr(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
-  cmp_update_op op;
+  cmp_incr_op op;
   try {
     auto p = in->cbegin();
     decode(op, p);
@@ -448,14 +442,14 @@ static int cmp_update(cls_method_context_t hctx, bufferlist *in, bufferlist *out
 
   // Successful comparison, update values
   values.clear();
-  r = cls_cxx_map_get_vals_by_keys(hctx, op.update_keys, &values);
+  r = cls_cxx_map_get_vals_by_keys(hctx, op.incr_keys, &values);
   if (r < 0) {
     CLS_LOG(4, "ERROR: %s() failed to read values to update r=%d", __func__, r);
     return r;
   }
   auto v = values.begin();
   ValueMap new_values;
-  for (const auto& key : op.update_keys) {
+  for (const auto& key : op.incr_keys) {
     bufferlist value;
     if (v != values.end() && v->first == key) {
       value = std::move(v->second);
@@ -475,8 +469,8 @@ static int cmp_update(cls_method_context_t hctx, bufferlist *in, bufferlist *out
       // failures to decode existing values are reported as EIO
       return -EIO;
     }
-    CLS_LOG(20, "%s(): update value=%" PRIu64 " with delta=%" PRId64, __func__, int_val, op.update);
-    int_val += op.update;
+    CLS_LOG(20, "%s(): update value=%" PRIu64 " with delta=%" PRId64, __func__, int_val, op.incr);
+    int_val += op.incr;
     value.clear();
     encode(int_val, value);
     new_values[key] = std::move(value);
@@ -484,10 +478,10 @@ static int cmp_update(cls_method_context_t hctx, bufferlist *in, bufferlist *out
   r = cls_cxx_map_set_vals(hctx, &new_values);
   if (r < 0) {
     CLS_LOG(10, "%s() failed to update keys count=%zu r=%d", __func__,
-            op.update_keys.size(), r);
+            op.incr_keys.size(), r);
     return r;
   }
-  CLS_LOG(20, "%s() update count=%zu", __func__, op.update_keys.size());
+  CLS_LOG(20, "%s() update count=%zu", __func__, op.incr_keys.size());
   return 0;
 }
 
@@ -501,7 +495,7 @@ CLS_INIT(cmpomap)
   cls_method_handle_t h_cmp_set_vals2;
   cls_method_handle_t h_cmp_rm_keys;
   cls_method_handle_t h_cmp_rm_keys2;
-  cls_method_handle_t h_cmp_update;
+  cls_method_handle_t h_cmp_incr;
 
   using namespace cls::cmpomap;
   cls_register(ClassId::name, &h_class);
@@ -512,5 +506,5 @@ CLS_INIT(cmpomap)
   cls.register_cxx_method(method::cmp_set_vals2, cmp_set_vals2, &h_cmp_set_vals2);
   cls.register_cxx_method(method::cmp_rm_keys,   cmp_rm_keys,   &h_cmp_rm_keys);
   cls.register_cxx_method(method::cmp_rm_keys2,  cmp_rm_keys2,  &h_cmp_rm_keys2);
-  cls.register_cxx_method(method::cmp_update,    cmp_update,    &h_cmp_update);
+  cls.register_cxx_method(method::cmp_incr,      cmp_incr,      &h_cmp_incr);
 }

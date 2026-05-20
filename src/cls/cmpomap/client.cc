@@ -116,28 +116,38 @@ int cmp_rm_keys2(librados::ObjectWriteOperation& op,
   return 0;
 }
 
-int cmp_update(librados::ObjectWriteOperation& op,
-               Op comparison, ComparisonMap cmp_values,
-               int64_t update, KeySet update_keys,
-               std::optional<ceph::bufferlist> default_value)
+int cmp_incr(librados::ObjectWriteOperation& op,
+             Op comparison, ComparisonMap cmp_values,
+             int64_t increment, KeySet incr_keys,
+             std::optional<ceph::bufferlist> default_value)
 {
-  if (update == 0) {
+  if (increment == 0) {
     return -EINVAL; // Incorrect use of the function
   }
-  if (cmp_values.size() > max_keys || update_keys.size() > max_keys) {
+  if (cmp_values.size() > max_keys || incr_keys.size() > max_keys) {
     return -E2BIG;
   }
-  cmp_update_op call;
+  cmp_incr_op call;
   call.comparison = comparison;
   call.cmp_values = std::move(cmp_values);
-  call.update = update;
-  call.update_keys = std::move(update_keys);
+  call.incr = increment;
+  call.incr_keys = std::move(incr_keys);
   call.default_value = std::move(default_value);
 
   bufferlist in;
   encode(call, in);
-  op.exec(method::cmp_update, in);
+  op.exec(method::cmp_incr, in);
   return 0;
+}
+
+int cmp_decr(librados::ObjectWriteOperation& op,
+             Op comparison, ComparisonMap cmp_values,
+             uint64_t decrement, KeySet decr_keys,
+             std::optional<ceph::bufferlist> default_value)
+{
+  // Call cmp_incr with negated delta
+  return cmp_incr(op, comparison, std::move(cmp_values), (int64_t)-decrement,
+                  std::move(decr_keys), std::move(default_value));
 }
 
 } // namespace cls::cmpomap

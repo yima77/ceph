@@ -76,14 +76,27 @@ static constexpr uint32_t max_keys = 1000;
 /// This function is only applied for U64 mode.
 /// Process all of the omap value comparisons according to the same rules as
 /// cmpxattr(). If all key/value pairs for comparison purpose compare successfully,
-/// the values of the keys for update are updated based on the update delta provided.
+/// the values of the keys for increment are updated based on the increment provided.
 /// Failure to decode an input value is reported as -EINVAL. An empty
 /// stored value is compared as 0, while decode failure of a stored value is treated
 /// as an unsuccessful comparison and is not reported as an error.
-[[nodiscard]] int cmp_update(librados::ObjectWriteOperation& writeop,
-                             Op comparison, ComparisonMap cmp_values,
-                             int64_t update, KeySet update_keys,
-                             std::optional<ceph::bufferlist> default_value);
+[[nodiscard]] int cmp_incr(librados::ObjectWriteOperation& writeop,
+                           Op comparison, ComparisonMap cmp_values,
+                           int64_t increment, KeySet incr_keys,
+                           std::optional<ceph::bufferlist> default_value);
+
+/// This function is only applied for U64 mode.
+/// Process all of the omap value comparisons according to the same rules as
+/// cmpxattr(). If all key/value pairs for comparison purpose compare successfully,
+/// the values of the keys for update are decremented based on the decrement delta provided.
+/// This is a convenience wrapper around cmp_incr that negates the delta.
+/// Failure to decode an input value is reported as -EINVAL. An empty
+/// stored value is compared as 0, while decode failure of a stored value is treated
+/// as an unsuccessful comparison and is not reported as an error.
+[[nodiscard]] int cmp_decr(librados::ObjectWriteOperation& writeop,
+                           Op comparison, ComparisonMap cmp_values,
+                           uint64_t decrement, KeySet decr_keys,
+                           std::optional<ceph::bufferlist> default_value);
 
 // bufferlist factories for comparison values
 inline ceph::bufferlist string_buffer(std::string_view value) {
