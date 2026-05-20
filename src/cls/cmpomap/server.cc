@@ -51,7 +51,7 @@ static int compare_values_u64(Op op, uint64_t lhs, const bufferlist& value)
       return -EIO;
     }
   }
-  CLS_LOG(10, "%s() compare %zu vs %zu", __func__, lhs, rhs);
+  CLS_LOG(20, "%s() compare %zu vs %zu", __func__, lhs, rhs);
   return compare_values(op, lhs, rhs);
 }
 
