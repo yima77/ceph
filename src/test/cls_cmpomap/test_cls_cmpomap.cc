@@ -52,6 +52,24 @@ class CmpOmap : public ::testing::Test {
  protected:
   librados::IoCtx& ioctx = RadosEnv::ioctx;
 
+  // Generic helper to wrap operation setup and execution
+  // Handles common pattern of: build operation -> check return -> execute with flags
+  template<typename OpType, typename Func, typename... Args>
+  int execute_op(const std::string& oid, Func&& func,
+                 bool need_returnvec, Args&&... args)
+  {
+    OpType op;
+    int ret = func(op, std::forward<Args>(args)...);
+    if (ret < 0) {
+      return ret;
+    }
+    if (need_returnvec) {
+      return ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+    } else {
+      return ioctx.operate(oid, &op);
+    }
+  }
+
   int do_cmp_vals(const std::string& oid, Mode mode,
                   Op comparison, ComparisonMap values,
                   std::optional<bufferlist> def = std::nullopt)
@@ -69,24 +87,16 @@ class CmpOmap : public ::testing::Test {
                       Op comparison, ComparisonMap values,
                       std::optional<bufferlist> def = std::nullopt)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_set_vals(op, mode, comparison,
-                           std::move(values), std::move(def));
-    if (ret < 0) {
-      return ret;
-    }
-    return ioctx.operate(oid, &op);
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_set_vals, false, mode, comparison,
+      std::move(values), std::move(def));
   }
 
   int do_cmp_rm_keys(const std::string& oid, Mode mode,
                      Op comparison, ComparisonMap values)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_rm_keys(op, mode, comparison, std::move(values));
-    if (ret < 0) {
-      return ret;
-    }
-    return ioctx.operate(oid, &op);
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_rm_keys, false, mode, comparison, std::move(values));
   }
 
   int do_cmp_set_vals2(const std::string& oid, Mode mode,
@@ -94,14 +104,9 @@ class CmpOmap : public ::testing::Test {
                        std::map<std::string, bufferlist> set_values,
                        std::optional<bufferlist> def = std::nullopt)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_set_vals2(op, mode, comparison,
-                            std::move(cmp_values), std::move(set_values),
-                            std::move(def));
-    if (ret < 0) {
-      return ret;
-    }
-    return ioctx.operate(oid, &op);
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_set_vals2, false, mode, comparison,
+      std::move(cmp_values), std::move(set_values), std::move(def));
   }
 
   int do_cmp_rm_keys2(const std::string& oid, Mode mode,
@@ -109,14 +114,9 @@ class CmpOmap : public ::testing::Test {
                       std::set<std::string> rm_keys,
                       std::optional<bufferlist> def = std::nullopt)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_rm_keys2(op, mode, comparison,
-                           std::move(cmp_values), std::move(rm_keys),
-                           std::move(def));
-    if (ret < 0) {
-      return ret;
-    }
-    return ioctx.operate(oid, &op);
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_rm_keys2, false, mode, comparison,
+      std::move(cmp_values), std::move(rm_keys), std::move(def));
   }
 
   int do_cmp_incr(const std::string& oid,
@@ -125,19 +125,9 @@ class CmpOmap : public ::testing::Test {
                     std::optional<uint64_t> def = std::nullopt,
                     uint64_t* result = nullptr)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_incr(op, comparison,
-                         std::move(cmp_values), update,
-                         update_key, def, result);
-    if (ret < 0) {
-      return ret;
-    }
-    // If result is requested, we need OPERATION_RETURNVEC flag to get output
-    if (result) {
-      return ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
-    } else {
-      return ioctx.operate(oid, &op);
-    }
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_incr, result != nullptr, comparison,
+      std::move(cmp_values), update, update_key, def, result);
   }
 
   int do_cmp_decr(const std::string& oid,
@@ -146,19 +136,27 @@ class CmpOmap : public ::testing::Test {
                     std::optional<uint64_t> def = std::nullopt,
                     uint64_t* result = nullptr)
   {
-    librados::ObjectWriteOperation op;
-    int ret = cmp_decr(op, comparison,
-                         std::move(cmp_values), decrement,
-                         update_key, def, result);
-    if (ret < 0) {
-      return ret;
-    }
-    // If result is requested, we need OPERATION_RETURNVEC flag to get output
-    if (result) {
-      return ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
-    } else {
-      return ioctx.operate(oid, &op);
-    }
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, cmp_decr, result != nullptr, comparison,
+      std::move(cmp_values), decrement, update_key, def, result);
+  }
+
+  int test_do_incr(const std::string& oid,
+                   int64_t increment, const std::string& incr_key,
+                   std::optional<uint64_t> def = std::nullopt,
+                   uint64_t* result = nullptr)
+  {
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, do_incr, result != nullptr, increment, incr_key, def, result);
+  }
+
+  int test_do_decr(const std::string& oid,
+                   uint64_t decrement, const std::string& decr_key,
+                   std::optional<uint64_t> def = std::nullopt,
+                   uint64_t* result = nullptr)
+  {
+    return execute_op<librados::ObjectWriteOperation>(
+      oid, do_decr, result != nullptr, decrement, decr_key, def, result);
   }
 
   int get_vals(const std::string& oid, std::map<std::string, bufferlist>* vals)
@@ -2145,6 +2143,28 @@ TEST_F(CmpOmap, cmp_incr_returns_underflow_value)
                           {{"cmp_key", u64_buffer(1)}},
                           -10, "counter", std::nullopt, &result), 0);
   EXPECT_EQ(result, std::numeric_limits<uint64_t>::max() - 4);
+}
+
+TEST_F(CmpOmap, do_incr_basic)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"counter", u64_buffer(10)}}), 0);
+
+  // Unconditional increment (no comparison required)
+  uint64_t result = 0;
+  ASSERT_EQ(test_do_incr(oid, 5, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 15);
+}
+
+TEST_F(CmpOmap, do_decr_basic)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"counter", u64_buffer(30)}}), 0);
+
+  // Unconditional decrement (no comparison required)
+  uint64_t result = 0;
+  ASSERT_EQ(test_do_decr(oid, 10, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 20);
 }
 
 } // namespace cls::cmpomap

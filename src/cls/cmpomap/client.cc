@@ -179,4 +179,24 @@ int cmp_decr(librados::ObjectWriteOperation& op,
                   decr_key, default_value, result);
 }
 
+int do_incr(librados::ObjectWriteOperation& op,
+            int64_t increment, const std::string& incr_key,
+            std::optional<uint64_t> default_value,
+            uint64_t* result)
+{
+  // Unconditional increment: use Op::EQ with empty ComparisonMap
+  return cmp_incr(op, Op::EQ, {}, increment,
+                  incr_key, default_value, result);
+}
+
+int do_decr(librados::ObjectWriteOperation& op,
+            uint64_t decrement, const std::string& decr_key,
+            std::optional<uint64_t> default_value,
+            uint64_t* result)
+{
+  // Unconditional decrement: use Op::EQ with empty ComparisonMap
+  return cmp_decr(op, Op::EQ, {}, decrement,
+                  decr_key, default_value, result);
+}
+
 } // namespace cls::cmpomap

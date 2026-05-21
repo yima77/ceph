@@ -118,6 +118,40 @@ static constexpr uint32_t max_keys = 1000;
                            std::optional<uint64_t> default_value = std::nullopt,
                            uint64_t* result = nullptr);
 
+/// This function is only applied for U64 mode.
+/// Unconditionally increment the value of the specified key by the given delta.
+/// This is a convenience wrapper around cmp_incr that always uses Op::EQ comparison
+/// with an empty ComparisonMap, making it an unconditional increment operation.
+/// If result is provided, the updated value will be stored in *result after
+/// ioctx.operate() completes successfully. The caller should check the return code
+/// from ioctx.operate() before using the result value.
+/// IMPORTANT: When requesting a result, you must pass librados::OPERATION_RETURNVEC
+/// flag to ioctx.operate() to enable return data from write operations:
+///   ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+/// Without this flag, the output bufferlist will be empty and result will not be set.
+/// If default_value is provided, missing keys will use this value instead of 0.
+[[nodiscard]] int do_incr(librados::ObjectWriteOperation& writeop,
+                          int64_t increment, const std::string& incr_key,
+                          std::optional<uint64_t> default_value = std::nullopt,
+                          uint64_t* result = nullptr);
+
+/// This function is only applied for U64 mode.
+/// Unconditionally decrement the value of the specified key by the given delta.
+/// This is a convenience wrapper around cmp_decr that always uses Op::EQ comparison
+/// with an empty ComparisonMap, making it an unconditional decrement operation.
+/// If result is provided, the updated value will be stored in *result after
+/// ioctx.operate() completes successfully. The caller should check the return code
+/// from ioctx.operate() before using the result value.
+/// IMPORTANT: When requesting a result, you must pass librados::OPERATION_RETURNVEC
+/// flag to ioctx.operate() to enable return data from write operations:
+///   ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+/// Without this flag, the output bufferlist will be empty and result will not be set.
+/// If default_value is provided, missing keys will use this value instead of 0.
+[[nodiscard]] int do_decr(librados::ObjectWriteOperation& writeop,
+                          uint64_t decrement, const std::string& decr_key,
+                          std::optional<uint64_t> default_value = std::nullopt,
+                          uint64_t* result = nullptr);
+
 // bufferlist factories for comparison values
 inline ceph::bufferlist string_buffer(std::string_view value) {
   ceph::bufferlist bl;
