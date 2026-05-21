@@ -162,8 +162,8 @@ struct cmp_incr_op {
   Op comparison;
   ComparisonMap cmp_values;
   int64_t incr;
-  std::optional<ceph::bufferlist> default_value;
-  KeySet incr_keys;
+  std::optional<uint64_t> default_value;
+  std::string incr_key;
 };
 
 inline void encode(const cmp_incr_op& o, ceph::bufferlist& bl, uint64_t f=0)
@@ -173,7 +173,7 @@ inline void encode(const cmp_incr_op& o, ceph::bufferlist& bl, uint64_t f=0)
   encode(o.cmp_values, bl);
   encode(o.incr, bl);
   encode(o.default_value, bl);
-  encode(o.incr_keys, bl);
+  encode(o.incr_key, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -184,7 +184,7 @@ inline void decode(cmp_incr_op& o, ceph::bufferlist::const_iterator& bl)
   decode(o.cmp_values, bl);
   decode(o.incr, bl);
   decode(o.default_value, bl);
-  decode(o.incr_keys, bl);
+  decode(o.incr_key, bl);
   DECODE_FINISH(bl);
 }
 

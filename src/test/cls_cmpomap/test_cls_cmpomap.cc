@@ -121,32 +121,44 @@ class CmpOmap : public ::testing::Test {
 
   int do_cmp_incr(const std::string& oid,
                     Op comparison, ComparisonMap cmp_values,
-                    int64_t update, std::set<std::string> update_keys,
-                    std::optional<bufferlist> def = std::nullopt)
+                    int64_t update, const std::string& update_key,
+                    std::optional<uint64_t> def = std::nullopt,
+                    uint64_t* result = nullptr)
   {
     librados::ObjectWriteOperation op;
     int ret = cmp_incr(op, comparison,
                          std::move(cmp_values), update,
-                         std::move(update_keys), std::move(def));
+                         update_key, def, result);
     if (ret < 0) {
       return ret;
     }
-    return ioctx.operate(oid, &op);
+    // If result is requested, we need OPERATION_RETURNVEC flag to get output
+    if (result) {
+      return ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+    } else {
+      return ioctx.operate(oid, &op);
+    }
   }
 
   int do_cmp_decr(const std::string& oid,
                     Op comparison, ComparisonMap cmp_values,
-                    int64_t decrement, std::set<std::string> update_keys,
-                    std::optional<bufferlist> def = std::nullopt)
+                    int64_t decrement, const std::string& update_key,
+                    std::optional<uint64_t> def = std::nullopt,
+                    uint64_t* result = nullptr)
   {
     librados::ObjectWriteOperation op;
     int ret = cmp_decr(op, comparison,
                          std::move(cmp_values), decrement,
-                         std::move(update_keys), std::move(def));
+                         update_key, def, result);
     if (ret < 0) {
       return ret;
     }
-    return ioctx.operate(oid, &op);
+    // If result is requested, we need OPERATION_RETURNVEC flag to get output
+    if (result) {
+      return ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+    } else {
+      return ioctx.operate(oid, &op);
+    }
   }
 
   int get_vals(const std::string& oid, std::map<std::string, bufferlist>* vals)
@@ -1530,11 +1542,15 @@ TEST_F(CmpOmap, cmp_incr_basic_increment)
                                   {"update_key", u64_buffer(5)}}), 0);
 
   // If cmp_key==10, increment update_key by 3
+  uint64_t result = 0;
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          3, {"update_key"}), 0);
+                          3, "update_key", std::nullopt, &result), 0);
 
-  // Verify update
+  // Verify returned value
+  EXPECT_EQ(result, 8);
+
+  // Verify update in storage
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
   EXPECT_EQ(vals["update_key"], u64_buffer(8));
@@ -1547,11 +1563,15 @@ TEST_F(CmpOmap, cmp_incr_basic_decrement)
                                   {"update_key", u64_buffer(20)}}), 0);
 
   // If cmp_key==10, decrement update_key by 5
+  uint64_t result = 0;
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          -5, {"update_key"}), 0);
+                          -5, "update_key", std::nullopt, &result), 0);
 
-  // Verify update
+  // Verify returned value
+  EXPECT_EQ(result, 15);
+
+  // Verify update in storage
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
   EXPECT_EQ(vals["update_key"], u64_buffer(15));
@@ -1566,7 +1586,7 @@ TEST_F(CmpOmap, cmp_incr_comparison_fails)
   // Comparison fails, no update
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(99)}},
-                          10, {"update_key"}), -ECANCELED);
+                          10, "update_key"), -ECANCELED);
 
   // Verify no change
   std::map<std::string, bufferlist> vals;
@@ -1581,23 +1601,21 @@ TEST_F(CmpOmap, cmp_incr_disjoint_keys)
   ASSERT_EQ(ioctx.omap_set(oid, {{"condition1", u64_buffer(10)},
                                   {"condition2", u64_buffer(20)},
                                   {"counter1", u64_buffer(100)},
-                                  {"counter2", u64_buffer(200)},
                                   {"other", u64_buffer(999)}}), 0);
 
-  // Check conditions, update counters (different keys)
+  // Check conditions, update counter1 (different key)
   ASSERT_EQ(do_cmp_incr(oid, Op::GT,
                           {{"condition1", u64_buffer(15)},
                            {"condition2", u64_buffer(25)}},
-                          50, {"counter1", "counter2"}), 0);
+                          50, "counter1"), 0);
 
-  // Verify: conditions unchanged, counters updated, other unchanged
+  // Verify: conditions unchanged, counter1 updated, other unchanged
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
-  ASSERT_EQ(vals.size(), 5);
+  ASSERT_EQ(vals.size(), 4);
   EXPECT_EQ(vals["condition1"], u64_buffer(10));   // unchanged
   EXPECT_EQ(vals["condition2"], u64_buffer(20));   // unchanged
   EXPECT_EQ(vals["counter1"], u64_buffer(150));    // updated: 100 + 50
-  EXPECT_EQ(vals["counter2"], u64_buffer(250));    // updated: 200 + 50
   EXPECT_EQ(vals["other"], u64_buffer(999));       // unchanged
 }
 
@@ -1606,48 +1624,40 @@ TEST_F(CmpOmap, cmp_incr_partial_overlap)
   const std::string oid = __PRETTY_FUNCTION__;
   // Some keys are both compared and updated
   ASSERT_EQ(ioctx.omap_set(oid, {{"key1", u64_buffer(10)},
-                                  {"key2", u64_buffer(20)},
-                                  {"key3", u64_buffer(30)}}), 0);
+                                  {"key2", u64_buffer(20)}}), 0);
 
-  // Compare key1 and key2, update key2 and key3
+  // Compare key1 and key2, update key2
   ASSERT_EQ(do_cmp_incr(oid, Op::LTE,
                           {{"key1", u64_buffer(5)},
                            {"key2", u64_buffer(15)}},
-                          5, {"key2", "key3"}), 0);
+                          5, "key2"), 0);
 
-  // Verify: key1 unchanged (only compared), key2 and key3 updated
+  // Verify: key1 unchanged (only compared), key2 updated
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
-  ASSERT_EQ(vals.size(), 3);
+  ASSERT_EQ(vals.size(), 2);
   EXPECT_EQ(vals["key1"], u64_buffer(10));  // unchanged (only compared)
   EXPECT_EQ(vals["key2"], u64_buffer(25));  // updated: 20 + 5 (compared and updated)
-  EXPECT_EQ(vals["key3"], u64_buffer(35));  // updated: 30 + 5 (only updated)
 }
 
 TEST_F(CmpOmap, cmp_incr_compare_one_update_many)
 {
   const std::string oid = __PRETTY_FUNCTION__;
-  // Use case: check single permission bit, update multiple counters
+  // Use case: check single permission bit, update one counter
   ASSERT_EQ(ioctx.omap_set(oid, {{"permission", u64_buffer(7)},
-                                  {"read_count", u64_buffer(100)},
-                                  {"write_count", u64_buffer(50)},
-                                  {"access_count", u64_buffer(200)},
-                                  {"total_ops", u64_buffer(350)}}), 0);
+                                  {"read_count", u64_buffer(100)}}), 0);
 
-  // If permission >= 4 (read bit set), increment all counters
+  // If permission >= 4 (read bit set), increment read_count
   ASSERT_EQ(do_cmp_incr(oid, Op::LTE,
                           {{"permission", u64_buffer(4)}},
-                          1, {"read_count", "write_count", "access_count", "total_ops"}), 0);
+                          1, "read_count"), 0);
 
-  // Verify: permission unchanged, all counters incremented
+  // Verify: permission unchanged, read_count incremented
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
-  ASSERT_EQ(vals.size(), 5);
+  ASSERT_EQ(vals.size(), 2);
   EXPECT_EQ(vals["permission"], u64_buffer(7));        // unchanged
   EXPECT_EQ(vals["read_count"], u64_buffer(101));     // incremented
-  EXPECT_EQ(vals["write_count"], u64_buffer(51));     // incremented
-  EXPECT_EQ(vals["access_count"], u64_buffer(201));   // incremented
-  EXPECT_EQ(vals["total_ops"], u64_buffer(351));      // incremented
 }
 
 TEST_F(CmpOmap, cmp_incr_compare_many_update_one)
@@ -1666,7 +1676,7 @@ TEST_F(CmpOmap, cmp_incr_compare_many_update_one)
                            {"version", u64_buffer(10)},
                            {"lock", u64_buffer(0)},
                            {"quota", u64_buffer(120)}},
-                          10, {"used"}), 0);
+                          10, "used"), 0);
 
   // Verify: all preconditions unchanged, only used incremented
   std::map<std::string, bufferlist> vals;
@@ -1682,30 +1692,28 @@ TEST_F(CmpOmap, cmp_incr_compare_many_update_one)
 TEST_F(CmpOmap, cmp_incr_complex_scenario)
 {
   const std::string oid = __PRETTY_FUNCTION__;
-  // Complex scenario: check guards, update different counters, keep some unchanged
+  // Complex scenario: check guards, update one counter, keep some unchanged
   ASSERT_EQ(ioctx.omap_set(oid, {
     {"guard_a", u64_buffer(1)},
     {"guard_b", u64_buffer(1)},
     {"counter_x", u64_buffer(10)},
-    {"counter_y", u64_buffer(20)},
     {"counter_z", u64_buffer(30)},
     {"metadata", u64_buffer(999)}
   }), 0);
 
-  // Check both guards, decrement counter_x and counter_y by 5
+  // Check both guards, decrement counter_x by 5
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"guard_a", u64_buffer(1)},
                            {"guard_b", u64_buffer(1)}},
-                          -5, {"counter_x", "counter_y"}), 0);
+                          -5, "counter_x"), 0);
 
-  // Verify: guards unchanged, x and y decremented, z and metadata unchanged
+  // Verify: guards unchanged, x decremented, z and metadata unchanged
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
-  ASSERT_EQ(vals.size(), 6);
+  ASSERT_EQ(vals.size(), 5);
   EXPECT_EQ(vals["guard_a"], u64_buffer(1));       // unchanged (compared)
   EXPECT_EQ(vals["guard_b"], u64_buffer(1));       // unchanged (compared)
   EXPECT_EQ(vals["counter_x"], u64_buffer(5));     // updated: 10 - 5
-  EXPECT_EQ(vals["counter_y"], u64_buffer(15));    // updated: 20 - 5
   EXPECT_EQ(vals["counter_z"], u64_buffer(30));    // unchanged (not in update set)
   EXPECT_EQ(vals["metadata"], u64_buffer(999));    // unchanged (not in update set)
 }
@@ -1714,19 +1722,17 @@ TEST_F(CmpOmap, cmp_incr_multiple_keys)
 {
   const std::string oid = __PRETTY_FUNCTION__;
   ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(10)},
-                                  {"counter1", u64_buffer(100)},
-                                  {"counter2", u64_buffer(200)}}), 0);
+                                  {"counter1", u64_buffer(100)}}), 0);
 
-  // Update multiple counters
+  // Update single counter
   ASSERT_EQ(do_cmp_incr(oid, Op::GTE,
                           {{"cmp_key", u64_buffer(20)}},
-                          50, {"counter1", "counter2"}), 0);
+                          50, "counter1"), 0);
 
-  // Verify updates
+  // Verify update
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
   EXPECT_EQ(vals["counter1"], u64_buffer(150));
-  EXPECT_EQ(vals["counter2"], u64_buffer(250));
 }
 
 TEST_F(CmpOmap, cmp_incr_multiple_comparisons)
@@ -1740,7 +1746,7 @@ TEST_F(CmpOmap, cmp_incr_multiple_comparisons)
   ASSERT_EQ(do_cmp_incr(oid, Op::LTE,
                           {{"cmp1", u64_buffer(5)},
                            {"cmp2", u64_buffer(15)}},
-                          100, {"counter"}), 0);
+                          100, "counter"), 0);
 
   // Verify update
   std::map<std::string, bufferlist> vals;
@@ -1759,7 +1765,7 @@ TEST_F(CmpOmap, cmp_incr_one_comparison_fails)
   ASSERT_EQ(do_cmp_incr(oid, Op::LT,
                           {{"cmp1", u64_buffer(5)},   // passes
                            {"cmp2", u64_buffer(25)}}, // fails
-                          100, {"counter"}), -ECANCELED);
+                          100, "counter"), -ECANCELED);
 
   // Verify no update
   std::map<std::string, bufferlist> vals;
@@ -1775,7 +1781,7 @@ TEST_F(CmpOmap, cmp_incr_nonexistent_update_key_no_default)
   // Update nonexistent key without default - should use 0
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          5, {"new_counter"}), 0);
+                          5, "new_counter"), 0);
 
   // Verify created with value 5
   std::map<std::string, bufferlist> vals;
@@ -1789,10 +1795,9 @@ TEST_F(CmpOmap, cmp_incr_nonexistent_update_key_with_default)
   ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(10)}}), 0);
 
   // Update nonexistent key with default value
-  bufferlist def = u64_buffer(100);
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          5, {"new_counter"}, def), 0);
+                          5, "new_counter", 100), 0);
 
   // Verify created with default + delta
   std::map<std::string, bufferlist> vals;
@@ -1806,10 +1811,9 @@ TEST_F(CmpOmap, cmp_incr_with_cmp_default)
   ASSERT_EQ(ioctx.omap_set(oid, {{"counter", u64_buffer(10)}}), 0);
 
   // Compare nonexistent key with default
-  bufferlist def = u64_buffer(0);
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"missing", u64_buffer(0)}},
-                          5, {"counter"}, def), 0);
+                          5, "counter", 0), 0);
 
   // Verify update
   std::map<std::string, bufferlist> vals;
@@ -1825,7 +1829,7 @@ TEST_F(CmpOmap, cmp_incr_missing_cmp_key_no_default)
   // Compare nonexistent key without default - fails
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"missing", u64_buffer(0)}},
-                          5, {"counter"}), -ECANCELED);
+                          5, "counter"), -ECANCELED);
 
   // Verify no update
   std::map<std::string, bufferlist> vals;
@@ -1839,7 +1843,7 @@ TEST_F(CmpOmap, cmp_incr_zero_delta_invalid)
   librados::ObjectWriteOperation op;
   EXPECT_EQ(cmp_incr(op, Op::EQ,
                        {{"key", u64_buffer(1)}},
-                       0, {"update_key"}, std::nullopt), -EINVAL);
+                       0, "update_key", std::nullopt), -EINVAL);
 }
 
 TEST_F(CmpOmap, cmp_incr_overflow)
@@ -1852,7 +1856,7 @@ TEST_F(CmpOmap, cmp_incr_overflow)
   // Increment at max value (will overflow)
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          1, {"counter"}), 0);
+                          1, "counter"), 0);
 
   // Verify overflow behavior (wraps to 0)
   std::map<std::string, bufferlist> vals;
@@ -1869,7 +1873,7 @@ TEST_F(CmpOmap, cmp_incr_invalid_stored_value)
   // Try to update key with non-u64 value
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          5, {"counter"}), -EIO);
+                          5, "counter"), -EIO);
 }
 
 TEST_F(CmpOmap, cmp_incr_invalid_cmp_value)
@@ -1882,55 +1886,46 @@ TEST_F(CmpOmap, cmp_incr_invalid_cmp_value)
   bufferlist invalid = string_buffer("invalid");
   EXPECT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", invalid}},
-                          5, {"counter"}), -EINVAL);
+                          5, "counter"), -EINVAL);
 }
 
 TEST_F(CmpOmap, cmp_incr_at_max_keys_cmp)
 {
   ComparisonMap cmp_vals;
-  std::set<std::string> update_keys = {"counter"};
   for (uint32_t i = 0; i < max_keys; i++) {
     cmp_vals.emplace(std::to_string(i), u64_buffer(i));
   }
   librados::ObjectWriteOperation op;
   EXPECT_EQ(cmp_incr(op, Op::LTE, std::move(cmp_vals),
-                       10, std::move(update_keys), std::nullopt), 0);
+                       10, "counter", std::nullopt), 0);
 }
 
 TEST_F(CmpOmap, cmp_incr_at_max_keys_update)
 {
   ComparisonMap cmp_vals = {{"cmp1", u64_buffer(1)}};
-  std::set<std::string> update_keys;
-  for (uint32_t i = 0; i < max_keys; i++) {
-    update_keys.insert(std::to_string(i));
-  }
   librados::ObjectWriteOperation op;
   EXPECT_EQ(cmp_incr(op, Op::LTE, std::move(cmp_vals),
-                       10, std::move(update_keys), std::nullopt), 0);
+                       10, "counter", std::nullopt), 0);
 }
 
 TEST_F(CmpOmap, cmp_incr_over_max_keys_cmp)
 {
   ComparisonMap cmp_vals;
-  std::set<std::string> update_keys = {"counter"};
   for (uint32_t i = 0; i < max_keys + 1; i++) {
     cmp_vals.emplace(std::to_string(i), u64_buffer(i));
   }
   librados::ObjectWriteOperation op;
   EXPECT_EQ(cmp_incr(op, Op::LTE, std::move(cmp_vals),
-                       10, std::move(update_keys), std::nullopt), -E2BIG);
+                       10, "counter", std::nullopt), -E2BIG);
 }
 
 TEST_F(CmpOmap, cmp_incr_over_max_keys_update)
 {
   ComparisonMap cmp_vals = {{"cmp1", u64_buffer(1)}};
-  std::set<std::string> update_keys;
-  for (uint32_t i = 0; i < max_keys + 1; i++) {
-    update_keys.insert(std::to_string(i));
-  }
   librados::ObjectWriteOperation op;
+  // No longer need to check update_keys limit since we only update one key
   EXPECT_EQ(cmp_incr(op, Op::LTE, std::move(cmp_vals),
-                       10, std::move(update_keys), std::nullopt), -E2BIG);
+                       10, "counter", std::nullopt), 0);
 }
 
 TEST_F(CmpOmap, cmp_incr_negative_to_positive)
@@ -1943,7 +1938,7 @@ TEST_F(CmpOmap, cmp_incr_negative_to_positive)
   // Large negative decrement (underflow)
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           {{"cmp_key", u64_buffer(10)}},
-                          -10, {"counter"}), 0);
+                          -10, "counter"), 0);
 
   // Will underflow to large positive (5 - 10 wraps around)
   std::map<std::string, bufferlist> vals;
@@ -1958,21 +1953,19 @@ TEST_F(CmpOmap, cmp_incr_negative_to_positive)
 TEST_F(CmpOmap, cmp_incr_empty_cmp_values)
 {
   const std::string oid = __PRETTY_FUNCTION__;
-  ASSERT_EQ(ioctx.omap_set(oid, {{"counter1", u64_buffer(10)},
-                                  {"counter2", u64_buffer(20)}}), 0);
+  ASSERT_EQ(ioctx.omap_set(oid, {{"counter1", u64_buffer(10)}}), 0);
 
   // Empty comparison map should always succeed
   ComparisonMap empty_cmp;
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           std::move(empty_cmp),
-                          5, {"counter1", "counter2"}), 0);
+                          5, "counter1"), 0);
 
-  // Verify both counters were incremented
+  // Verify counter was incremented
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
-  ASSERT_EQ(vals.size(), 2);
+  ASSERT_EQ(vals.size(), 1);
   EXPECT_EQ(vals["counter1"], u64_buffer(15));
-  EXPECT_EQ(vals["counter2"], u64_buffer(25));
 }
 
 TEST_F(CmpOmap, cmp_incr_empty_cmp_values_decrement)
@@ -1984,7 +1977,7 @@ TEST_F(CmpOmap, cmp_incr_empty_cmp_values_decrement)
   ComparisonMap empty_cmp;
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           std::move(empty_cmp),
-                          -30, {"counter"}), 0);
+                          -30, "counter"), 0);
 
   // Verify counter was decremented
   std::map<std::string, bufferlist> vals;
@@ -2001,7 +1994,7 @@ TEST_F(CmpOmap, cmp_incr_empty_cmp_values_create_new)
   ComparisonMap empty_cmp;
   ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
                           std::move(empty_cmp),
-                          100, {"new_counter"}), 0);
+                          100, "new_counter"), 0);
 
   // Verify new counter was created
   std::map<std::string, bufferlist> vals;
@@ -2023,14 +2016,135 @@ TEST_F(CmpOmap, cmp_decr_basic)
 
   // If cmp_key==10, decrement counter by 5
   // cmp_decr is a wrapper around cmp_incr, so no need for extensive tests
+  uint64_t result = 0;
   ASSERT_EQ(do_cmp_decr(oid, Op::EQ,
                         {{"cmp_key", u64_buffer(10)}},
-                        5, {"counter"}), 0);
+                        5, "counter", std::nullopt, &result), 0);
 
-  // Verify decrement (20 - 5 = 15)
+  // Verify returned value (20 - 5 = 15)
+  EXPECT_EQ(result, 15);
+
+  // Verify decrement in storage
   std::map<std::string, bufferlist> vals;
   ASSERT_EQ(get_vals(oid, &vals), 0);
   EXPECT_EQ(vals["counter"], u64_buffer(15));
+}
+
+// ============================================================================
+// Tests for cmp_incr/cmp_decr returned values
+// ============================================================================
+
+TEST_F(CmpOmap, cmp_incr_returns_updated_value)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(100)}}), 0);
+
+  // Increment and verify returned value
+  uint64_t result = 0;
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          50, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 150);
+}
+
+TEST_F(CmpOmap, cmp_incr_returns_value_on_zero_start)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(0)}}), 0);
+
+  uint64_t result = 999; // Initialize to non-zero to verify it gets updated
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          42, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 42);
+}
+
+TEST_F(CmpOmap, cmp_incr_returns_value_on_new_key)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)}}), 0);
+
+  // Create new counter starting from 0
+  uint64_t result = 0;
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          10, "new_counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 10);
+}
+
+TEST_F(CmpOmap, cmp_incr_returns_value_with_default)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)}}), 0);
+
+  // Create new counter with default value
+  uint64_t result = 0;
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          5, "new_counter", 100, &result), 0);
+  EXPECT_EQ(result, 105);
+}
+
+TEST_F(CmpOmap, cmp_decr_returns_updated_value)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(100)}}), 0);
+
+  // Decrement and verify returned value
+  uint64_t result = 0;
+  ASSERT_EQ(do_cmp_decr(oid, Op::EQ,
+                        {{"cmp_key", u64_buffer(1)}},
+                        30, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 70);
+}
+
+TEST_F(CmpOmap, cmp_incr_without_result_param)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(10)}}), 0);
+
+  // Call without result parameter (nullptr) should still work
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          5, "counter", std::nullopt, nullptr), 0);
+
+  // Verify update happened
+  std::map<std::string, bufferlist> vals;
+  ASSERT_EQ(get_vals(oid, &vals), 0);
+  EXPECT_EQ(vals["counter"], u64_buffer(15));
+}
+
+TEST_F(CmpOmap, cmp_incr_returns_overflow_value)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  uint64_t max_val = std::numeric_limits<uint64_t>::max();
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(max_val)}}), 0);
+
+  // Increment at max value (will overflow to 0)
+  uint64_t result = 999;
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          1, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, 0);
+}
+
+TEST_F(CmpOmap, cmp_incr_returns_underflow_value)
+{
+  const std::string oid = __PRETTY_FUNCTION__;
+  ASSERT_EQ(ioctx.omap_set(oid, {{"cmp_key", u64_buffer(1)},
+                                  {"counter", u64_buffer(5)}}), 0);
+
+  // Decrement beyond zero (will underflow)
+  uint64_t result = 0;
+  ASSERT_EQ(do_cmp_incr(oid, Op::EQ,
+                          {{"cmp_key", u64_buffer(1)}},
+                          -10, "counter", std::nullopt, &result), 0);
+  EXPECT_EQ(result, std::numeric_limits<uint64_t>::max() - 4);
 }
 
 } // namespace cls::cmpomap

@@ -440,48 +440,46 @@ static int cmp_incr(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  // Successful comparison, update values
+  // Successful comparison, update value
   values.clear();
-  r = cls_cxx_map_get_vals_by_keys(hctx, op.incr_keys, &values);
+  std::set<std::string> incr_key_set = {op.incr_key};
+  r = cls_cxx_map_get_vals_by_keys(hctx, incr_key_set, &values);
   if (r < 0) {
-    CLS_LOG(4, "ERROR: %s() failed to read values to update r=%d", __func__, r);
+    CLS_LOG(4, "ERROR: %s() failed to read value to update r=%d", __func__, r);
     return r;
   }
-  auto v = values.begin();
-  ValueMap new_values;
-  for (const auto& key : op.incr_keys) {
-    bufferlist value;
-    if (v != values.end() && v->first == key) {
-      value = std::move(v->second);
-      ++v;
-    } else if (op.default_value) {
-      value = *op.default_value;
-    } else {
-      // Missing key/value is treated as 0
-      encode((uint64_t)0, value);
-    }
-    uint64_t int_val = 0;
+
+  uint64_t value = 0; // default value for missing key
+  if (!values.empty() && values.begin()->first == op.incr_key) {
     try {
-      auto p = value.cbegin();
+      auto p = values.begin()->second.cbegin();
       using ceph::decode;
-      decode(int_val, p);
+      decode(value, p);
     } catch (const buffer::error&) {
       // failures to decode existing values are reported as EIO
       return -EIO;
     }
-    CLS_LOG(20, "%s(): update value=%" PRIu64 " with delta=%" PRId64, __func__, int_val, op.incr);
-    int_val += op.incr;
-    value.clear();
-    encode(int_val, value);
-    new_values[key] = std::move(value);
+  } else if (op.default_value) {
+    value = *op.default_value;
   }
+
+  CLS_LOG(20, "%s(): update value=%" PRIu64 " with delta=%" PRId64, __func__, value, op.incr);
+  value += op.incr;
+  bufferlist value_bl;
+  encode(value, value_bl);
+
+  ValueMap new_values = { {op.incr_key, value_bl} };
+
   r = cls_cxx_map_set_vals(hctx, &new_values);
   if (r < 0) {
-    CLS_LOG(10, "%s() failed to update keys count=%zu r=%d", __func__,
-            op.incr_keys.size(), r);
+    CLS_LOG(10, "%s() failed to update key=%s r=%d", __func__,
+            op.incr_key.c_str(), r);
     return r;
   }
-  CLS_LOG(20, "%s() update count=%zu", __func__, op.incr_keys.size());
+  CLS_LOG(20, "%s() updated key=%s to value=%" PRIu64, __func__, op.incr_key.c_str(), value);
+
+  // Return the updated value in the output buffer
+  encode(value, *out);
   return 0;
 }
 

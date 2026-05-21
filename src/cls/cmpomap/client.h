@@ -76,27 +76,47 @@ static constexpr uint32_t max_keys = 1000;
 /// This function is only applied for U64 mode.
 /// Process all of the omap value comparisons according to the same rules as
 /// cmpxattr(). If all key/value pairs for comparison purpose compare successfully,
-/// the values of the keys for increment are updated based on the increment provided.
+/// the value of the key for increment is updated based on the increment provided.
 /// Failure to decode an input value is reported as -EINVAL. An empty
 /// stored value is compared as 0, while decode failure of a stored value is treated
 /// as an unsuccessful comparison and is not reported as an error.
+/// If result is provided, the updated value will be stored in *result after
+/// ioctx.operate() completes successfully. The caller should check the return code
+/// from ioctx.operate() before using the result value.
+/// IMPORTANT: When requesting a result, you must pass librados::OPERATION_RETURNVEC
+/// flag to ioctx.operate() to enable return data from write operations:
+///   ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+/// Without this flag, the output bufferlist will be empty and result will not be set.
+/// If default_value is provided, missing keys (both comparison and update keys)
+/// will use this value instead of 0.
 [[nodiscard]] int cmp_incr(librados::ObjectWriteOperation& writeop,
                            Op comparison, ComparisonMap cmp_values,
-                           int64_t increment, KeySet incr_keys,
-                           std::optional<ceph::bufferlist> default_value);
+                           int64_t increment, const std::string& incr_key,
+                           std::optional<uint64_t> default_value = std::nullopt,
+                           uint64_t* result = nullptr);
 
 /// This function is only applied for U64 mode.
 /// Process all of the omap value comparisons according to the same rules as
 /// cmpxattr(). If all key/value pairs for comparison purpose compare successfully,
-/// the values of the keys for update are decremented based on the decrement delta provided.
+/// the value of the key for update is decremented based on the decrement delta provided.
 /// This is a convenience wrapper around cmp_incr that negates the delta.
 /// Failure to decode an input value is reported as -EINVAL. An empty
 /// stored value is compared as 0, while decode failure of a stored value is treated
 /// as an unsuccessful comparison and is not reported as an error.
+/// If result is provided, the updated value will be stored in *result after
+/// ioctx.operate() completes successfully. The caller should check the return code
+/// from ioctx.operate() before using the result value.
+/// IMPORTANT: When requesting a result, you must pass librados::OPERATION_RETURNVEC
+/// flag to ioctx.operate() to enable return data from write operations:
+///   ioctx.operate(oid, &op, librados::OPERATION_RETURNVEC);
+/// Without this flag, the output bufferlist will be empty and result will not be set.
+/// If default_value is provided, missing keys (both comparison and update keys)
+/// will use this value instead of 0.
 [[nodiscard]] int cmp_decr(librados::ObjectWriteOperation& writeop,
                            Op comparison, ComparisonMap cmp_values,
-                           uint64_t decrement, KeySet decr_keys,
-                           std::optional<ceph::bufferlist> default_value);
+                           uint64_t decrement, const std::string& decr_key,
+                           std::optional<uint64_t> default_value = std::nullopt,
+                           uint64_t* result = nullptr);
 
 // bufferlist factories for comparison values
 inline ceph::bufferlist string_buffer(std::string_view value) {
