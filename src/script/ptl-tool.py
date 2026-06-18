@@ -1192,7 +1192,7 @@ class ConflictSimulationCheck(BaseAuditCheck):
                 md_text = textwrap.dedent(md_text)
                 
                 for dev in recorded_deviations:
-                    md_text += f"#### Deviation in Backport `{dev['bp_sha'][:8]}` (cherry-pick of `{dev['orig_sha'][:8]}`)\n\n"
+                    md_text += f"#### Deviation in Backport {dev['bp_sha'][:8]} (cherry-pick of {dev['orig_sha'][:8]})\n\n"
                     
                     if dev['unmerged']:
                         md_text += "**Affected File(s)**\n"
@@ -1773,8 +1773,7 @@ def build_branch(args):
         response = get_pr_info(session, pr)
         detected_base = response.get("base", {}).get("ref")
         if base and detected_base and detected_base != base:
-            log.error(f"Base mismatch! PR #{pr} targets '{detected_base}' but expected '{base}'.")
-            sys.exit(1)
+            log.warning(f"Base mismatch! PR #{pr} targets '{detected_base}' but expected '{base}'. Trusting provided --base.")
 
         remote_ref = "refs/pull/{pr}/head".format(pr=pr)
         remote_sha1 = response.get('head', {}).get('sha')

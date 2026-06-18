@@ -244,6 +244,11 @@ public:
 
   virtual uuid_d get_fsid() const  = 0;
 
+  /// Override to report a tighter per-object cap than osd_max_object_size.
+  virtual uint64_t get_max_object_size() const {
+    return crimson::common::local_conf()->osd_max_object_size;
+  }
+
   virtual seastar::future<> write_meta(const std::string& key,
 				       const std::string& value) = 0;
 

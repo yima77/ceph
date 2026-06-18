@@ -510,10 +510,25 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
             enum_allowed=['file', 'syslog', 'file,syslog'],
         ),
         Option(
+            'cephadm_binary_logging_level',
+            type='str',
+            default='debug',
+            desc='Logging verbosity for the cephadm binary when invoked by the mgr (e.g. check-host, gather-facts).',
+            enum_allowed=['info', 'debug', 'error', 'warning']
+        ),
+        Option(
             'oob_default_addr',
             type='str',
             default='169.254.1.1',
             desc="Default IP address for RedFish API (OOB management)."
+        ),
+        Option(
+            'sudo_hardening',
+            type='bool',
+            default=False,
+            desc='Enable sudo hardening by routing all command execution through invoker.py. '
+                 'When enabled, cephadm and bash commands are validated and executed via '
+                 'the secure invoker wrapper.'
         ),
     ]
     for image in DefaultImages:
@@ -537,6 +552,9 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
             self.paused = True
         else:
             self.paused = False
+
+        self.sudo_hardening = False
+        self.invoker_path = '/usr/libexec/cephadm_invoker.py'
 
         # for mypy which does not run the code
         if TYPE_CHECKING:
@@ -617,11 +635,14 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
             self.oob_default_addr = ''
             self.ssh_keepalive_interval = 0
             self.ssh_keepalive_count_max = 0
+            self.sudo_hardening = False
+            self.invoker_path = '/usr/libexec/cephadm_invoker.py'
             self.certificate_duration_days = 0
             self.certificate_renewal_threshold_days = 0
             self.certificate_automated_rotation_enabled = False
             self.certificate_check_debug_mode = False
             self.certificate_check_period = 0
+            self.cephadm_binary_logging_level = 'debug'
 
         self.notify(NotifyType.mon_map, None)
         self.config_notify()
@@ -1181,6 +1202,90 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
 
         return True, err, ret
 
+    def _setup_user_on_host(self, host: str, user: str, ssh_pub_key: str,
+                            addr: Optional[str] = None) -> None:
+        """
+        Setup sudoers and copy SSH key by calling cephadm setup-ssh-user.
+        User must already exist on the host.
+        For root user, only SSH key is copied (sudoers setup is skipped).
+        """
+        self.log.debug('Setting up user %s on host %s', user, host)
+        try:
+            out, err, code = self.wait_async(
+                CephadmServe(self)._run_cephadm(
+                    host,
+                    cephadmNoImage,
+                    'setup-ssh-user',
+                    ['--ssh-user', user, '--ssh-pub-key', ssh_pub_key],
+                    addr=addr,
+                    error_ok=False,
+                    no_fsid=True
+                )
+            )
+            if code != 0:
+                msg = f'Failed to setup user {user} on host {host}: {err}'
+                self.log.error(msg)
+                raise OrchestratorError(msg)
+            self.log.info('Successfully set up user %s on host %s', user, host)
+        except OrchestratorError:
+            raise
+        except Exception as e:
+            msg = f'Failed to setup user {user} on host {host}: {e}'
+            self.log.exception(msg)
+            raise OrchestratorError(msg)
+
+    def _setup_user_on_all_hosts(self, user: str) -> None:
+        """
+        Setup sudoers and copy SSH key on all hosts in the cluster.
+        For root user, only SSH key is copied (sudoers setup is skipped).
+        """
+        if not self.ssh_pub:
+            raise OrchestratorError(
+                'No SSH public key configured. '
+                'Please generate or set SSH keys first using '
+                '`ceph cephadm generate-key` or `ceph cephadm set-pub-key`.'
+            )
+
+        hosts = self.cache.get_hosts()
+        if not hosts:
+            self.log.warning('No hosts in inventory, skipping user setup')
+            return
+
+        self.log.info('Setting up user %s on %s host(s)', user, len(hosts))
+
+        @forall_hosts
+        def setup_user_on_host(host: str) -> Tuple[str, Optional[str]]:
+            """Returns (host, error_message) tuple. error_message is None on success."""
+            try:
+                assert self.ssh_pub
+                self._setup_user_on_host(host, user, self.ssh_pub)
+                return (host, None)
+            except Exception as e:
+                self.log.error('Failed to setup user %s on host %s: %s', user, host, e)
+                return (host, str(e))
+
+        results = setup_user_on_host(hosts)
+        failed_hosts = [(host, error) for host, error in results if error is not None]
+        if failed_hosts:
+            self.log.error('Failed to setup user %s on %s of %s host(s)', user, len(failed_hosts), len(hosts))
+            error_parts = [f'Failed to setup user {user} on the following hosts:']
+            for host, error in failed_hosts:
+                error_parts.append(f'  - {host}: {error}')
+            error_parts.extend([
+                f'\nPlease ensure user {user} exists on these hosts and retry:',
+                f'  1. Create user: useradd -m -s /bin/bash {user}',
+                f'  2. Retry: ceph cephadm set-user {user}',
+                '\nOr manually complete the setup:',
+                f'  1. Setup sudoers: echo "{user} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/{user}',
+                f'  2. Set permissions: chmod 440 /etc/sudoers.d/{user}',
+                '  3. Copy SSH key: ceph cephadm get-pub-key > ~/ceph.pub',
+                f'  4. Add key: ssh-copy-id -f -i ~/ceph.pub {user}@HOST',
+                '\nAnd use --skip-pre-steps flag to skip automatic setup.'
+            ])
+            raise OrchestratorError('\n'.join(error_parts))
+
+        self.log.info('Successfully set up user %s on all %s host(s)', user, len(hosts))
+
     def _validate_and_set_ssh_val(self, what: str, new: Optional[str], old: Optional[str]) -> None:
         self.set_store(what, new)
         self.ssh._reconfig_ssh()
@@ -1344,13 +1449,29 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
 
     @CephadmCLICommand.Read(
         'cephadm set-user')
-    def set_ssh_user(self, user: str) -> Tuple[int, str, str]:
+    def set_ssh_user(self, user: str, skip_pre_steps: bool = False) -> Tuple[int, str, str]:
         """
-        Set user for SSHing to cluster hosts, passwordless sudo will be needed for non-root users
+        Set user for SSHing to cluster hosts, passwordless sudo will be needed for non-root users.
+
+        This command will automatically setup passwordless sudo for the user and
+        copy SSH public key to the user's authorized_keys.
+        Use --skip-pre-steps if you have already manually configured the user on all hosts.
         """
         current_user = self.ssh_user
         if user == current_user:
             return 0, "value unchanged", ""
+
+        if user != 'root' and not skip_pre_steps:
+            self.log.info('Setting up SSH user %s on all cluster hosts', user)
+            try:
+                self._setup_user_on_all_hosts(user)
+            except OrchestratorError as e:
+                self.log.error('Failed to setup user %s: %s', user, e)
+                return -errno.EINVAL, '', str(e)
+            except Exception as e:
+                msg = f'Failed to setup user {user} on all hosts: {e}'
+                self.log.exception(msg)
+                return -errno.EINVAL, '', msg
 
         self._validate_and_set_ssh_val('ssh_user', user, current_user)
         current_ssh_config = self._get_ssh_config()
@@ -1461,6 +1582,129 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
                 if item.startswith('host %s ' % host):
                     self.event.set()
         return 0, '%s (%s) ok' % (host, addr), '\n'.join(err)
+
+    def _prepare_host_for_sudo_hardening(
+        self,
+        host: str,
+        cephadm_args: List[str],
+        addr: Optional[str] = None
+    ) -> Tuple[str, bool, str]:
+        """
+        Prepare a host for sudo hardening by executing cephadm prepare-host-sudo-hardening.
+        """
+        try:
+            self.log.debug('Preparing host %s for sudo hardening...', host)
+            addr = addr or (self.inventory.get_addr(host) if host in self.inventory else None)
+
+            with self.async_timeout_handler(host, 'cephadm prepare-host-sudo-hardening'):
+                out, err, code = self.wait_async(
+                    CephadmServe(self)._run_cephadm(
+                        host,
+                        cephadmNoImage,
+                        'prepare-host-sudo-hardening',
+                        cephadm_args,
+                        addr=addr, error_ok=True, no_fsid=True))
+            if code:
+                error_msg = '\n'.join(err) if err else 'Unknown error'
+                self.log.error('Failed to prepare host %s: %s', host, error_msg)
+                return (host, False, error_msg)
+            self.log.debug('Successfully prepared host %s', host)
+            return (host, True, '')
+        except Exception as e:
+            error_msg = str(e)
+            self.log.exception('Exception while preparing host %s: %s', host, error_msg)
+            return (host, False, error_msg)
+
+    @forall_hosts
+    def _prepare_hosts_for_sudo_hardening(
+        self,
+        host: str,
+        cephadm_args: List[str],
+        addr: Optional[str] = None
+    ) -> Tuple[str, bool, str]:
+        return self._prepare_host_for_sudo_hardening(host, cephadm_args, addr)
+
+    @CephadmCLICommand.Write('cephadm prepare-host-and-enable-sudo-hardening')
+    def _prepare_host_and_enable_sudo_hardening(
+        self,
+        user: str,
+        host_label: Optional[str] = None
+    ) -> Tuple[int, str, str]:
+        """
+        Prepare hosts and enable sudo hardening for the cluster.
+        This command performs a complete sudo hardening setup:
+        1. Prepare each host for sudo hardening (install cephadm, configure sudoers) - executed on all hosts
+        2. Set SSH user to the specified user for cluster operations (without pre-steps)
+        3. Enable sudo hardening globally for the cluster
+        """
+        if not self.ssh_pub:
+            return 1, '', 'Error: No SSH public key configured. Run "ceph cephadm generate-key" first.'
+        if host_label:
+            hosts_to_prepare = [h for h in self.cache.get_hosts()
+                                if self.inventory.has_label(h, host_label)]
+        else:
+            hosts_to_prepare = self.cache.get_hosts()
+        if not hosts_to_prepare:
+            return 1, '', 'Error: No hosts found'
+        self.log.debug('Preparing %s host(s) in the cluster: %s', len(hosts_to_prepare), ", ".join(hosts_to_prepare))
+
+        # Prepare arguments for the cephadm command
+        args = []
+        args.extend(['--ssh-user', user])
+        args.extend(['--ssh-pub-key', self.ssh_pub])
+        ceph_version = self._get_cephadm_version_for_host_prep()
+        if ceph_version:
+            args.extend(['--cephadm-version', ceph_version])
+
+        # Step 1: Prepare each host for sudo hardening (executed on all target hosts in parallel)
+        self.log.debug('Step 1: Preparing %s host(s) for sudo hardening in parallel', len(hosts_to_prepare))
+        host_args = [(host, args) for host in hosts_to_prepare]
+        try:
+            host_results = self._prepare_hosts_for_sudo_hardening(host_args)
+        except Exception as e:
+            self.log.exception('Failed to prepare hosts in parallel: %s', e)
+            return 1, '', f'Failed to prepare hosts: {str(e)}'
+        failed_hosts = []
+        for hostname, success, error_msg in host_results:
+            if not success:
+                failed_hosts.append(hostname)
+        if failed_hosts:
+            return 1, '', f'Failed to prepare {len(failed_hosts)} host(s): {", ".join(failed_hosts)}'
+        self.log.debug('All %s hosts prepared successfully', len(hosts_to_prepare))
+
+        # Step 2: Enable sudo hardening globally
+        self.log.debug('Step 2: Enabling sudo hardening...')
+        try:
+            if not self.sudo_hardening:
+                self.set_module_option('sudo_hardening', True)
+                self.sudo_hardening = True
+        except Exception as e:
+            error_msg = f'Failed to enable sudo hardening: {e}'
+            self.log.exception(error_msg)
+            return 1, '', error_msg
+
+        # Step 3: Set SSH user for cluster operations
+        self.log.debug('Step 3: Setting SSH user to %s for cluster operations', user)
+        try:
+            # Call set_ssh_user with skip_pre_steps=True since we've already prepared the hosts
+            current_user = self.ssh_user
+            if current_user != user:
+                retval, out_msg, err_msg = self.set_ssh_user(user, skip_pre_steps=True)
+                if retval != 0:
+                    error_msg = f'Failed to set SSH user: {err_msg}'
+                    self.log.error(error_msg)
+                    return 1, '', error_msg
+        except Exception as e:
+            error_msg = f'Failed to set SSH user: {e}'
+            self.log.exception(error_msg)
+            return 1, '', error_msg
+
+        success_msg = (
+            f'Sudo hardening is now active for all cluster operations.\n'
+            f'Affected hosts: {", ".join(hosts_to_prepare)}\n'
+        )
+        self.log.debug(success_msg)
+        return 0, success_msg, ''
 
     @CephadmCLICommand.Write(
         prefix='cephadm set-extra-ceph-conf')
@@ -1886,6 +2130,47 @@ Then run the following:
             raise OrchestratorError(str(e))
         return ip_addr
 
+    def _get_cephadm_version_for_host_prep(self) -> Optional[str]:
+        """Extract cephadm version from cluster version string."""
+        try:
+            if self.version:
+                parts = self.version.split()
+                if len(parts) > 2 and parts[0] == 'ceph' and parts[1] == 'version':
+                    return parts[2]
+        except Exception as e:
+            self.log.debug(f'Could not determine cluster version: {e}')
+        return None
+
+    def _prepare_new_host_for_sudo_hardening(self, hostname: str, addr: str) -> None:
+        """
+        Prepare a new host for sudo hardening before adding to inventory.
+        Raises OrchestratorError on failure.
+        """
+        if not self.ssh_pub:
+            raise OrchestratorError('No SSH public key configured')
+        if not self.ssh_user:
+            raise OrchestratorError('No SSH user configured')
+
+        self.log.info('Preparing new host %s for sudo hardening with root', hostname)
+
+        # Build arguments
+        ceph_version = self._get_cephadm_version_for_host_prep()
+        if ceph_version:
+            self.log.debug('Will install cephadm version %s on %s', ceph_version, hostname)
+        cephadm_args = ['--ssh-user', self.ssh_user, '--ssh-pub-key', self.ssh_pub]
+        if ceph_version:
+            cephadm_args.extend(['--cephadm-version', ceph_version])
+
+        # Execute preparation
+        _, success, error_msg = self._prepare_host_for_sudo_hardening(
+            hostname, cephadm_args, addr
+        )
+        if not success:
+            raise OrchestratorError(
+                f'Failed to prepare host {hostname} for sudo hardening: {error_msg}'
+            )
+        self.log.info('Successfully prepared host %s for sudo hardening', hostname)
+
     def _add_host(self, spec):
         # type: (HostSpec) -> str
         """
@@ -1930,6 +2215,16 @@ Then run the following:
             self.update_maintenance_healthcheck()
         self.event.set()  # refresh stray health check
         self.log.info('Added host %s' % spec.hostname)
+
+        if self.sudo_hardening and self.ssh_user and self.ssh_user != 'root':
+            try:
+                self._prepare_new_host_for_sudo_hardening(spec.hostname, spec.addr)
+            except Exception as e:
+                self.log.exception('Sudo hardening preparation failed for %s: %s', spec.hostname, e)
+                raise OrchestratorError(
+                    f'Failed to prepare host {spec.hostname} for sudo hardening. '
+                    f'Host was not added to the cluster. Error: {e}'
+                )
         return "Added host '{}' with addr '{}'".format(spec.hostname, spec.addr)
 
     @handle_orch_error
@@ -2505,13 +2800,14 @@ Then run the following:
             else:
                 size = spec.placement.get_target_count(self.cache.get_schedulable_hosts())
 
+            deleted_ts = self.spec_store.spec_deleted.get(nm)
             svc_desc = orchestrator.ServiceDescription(
                 spec=spec,
                 size=size,
                 running=0,
                 events=self.events.get_for_service(spec.service_name()),
                 created=self.spec_store.spec_created[nm],
-                deleted=self.spec_store.spec_deleted.get(nm, None),
+                deleted=deleted_ts[0] if deleted_ts else None,
                 virtual_ip=spec.get_virtual_ip(),
                 ports=spec.get_port_start(),
             )
@@ -2832,28 +3128,61 @@ Then run the following:
         return msg
 
     @handle_orch_error
-    def remove_daemons(self, names):
-        # type: (List[str]) -> List[str]
+    def remove_daemons(self,
+                       names: List[str],
+                       force_delete_data: bool = False) -> List[str]:
+        """
+        Remove specific daemon(s).
+
+        :param names: daemon names to remove
+        :param force: skip safety checks (PRECIOUS DATA warning)
+        :param force_delete_data: if True, request that cephadm delete the
+                                  daemon data instead of moving it under
+                                  <fsid>/removed/.
+        """
         args = []
         for host, dm in self.cache.daemons.items():
             for name in names:
                 if name in dm:
-                    args.append((name, host))
+                    args.append((name, host, force_delete_data))
         if not args:
             raise OrchestratorError('Unable to find daemon(s) %s' % (names), errno=errno.EINVAL)
         self.log.info('Remove daemons %s' % ' '.join([a[0] for a in args]))
         return self._remove_daemons(args)
 
     @handle_orch_error
-    def remove_service(self, service_name: str, force: bool = False) -> str:
-        self.log.info('Remove service %s' % service_name)
+    def remove_service(
+        self,
+        service_name: str,
+        force: bool = False,
+        force_delete_data: bool = False
+    ) -> str:
+        """
+        Remove a service.
+
+        :param service_name: service to remove
+        :param force: skip safety checks (e.g., leftover OSDs)
+        :param force_delete_data: intent to delete backing daemon data instead
+                                  of moving it under <fsid>/removed/.
+                                  (actual effect depends on lower layers)
+        """
+        self.log.info(
+            'Remove service %s (force=%s, force_delete_data=%s)' %
+            (service_name, force, force_delete_data)
+        )
         self._trigger_preview_refresh(service_name=service_name)
         if service_name in self.spec_store:
             if self.spec_store[service_name].spec.service_type in ('mon', 'mgr'):
-                return f'Unable to remove {service_name} service.\n' \
-                       f'Note, you might want to mark the {service_name} service as "unmanaged"'
+                return (
+                    f'Unable to remove {service_name} service.\n'
+                    f'Note, you might want to mark the {service_name} '
+                    f'service as "unmanaged"'
+                )
         else:
-            return f"Invalid service '{service_name}'. Use 'ceph orch ls' to list available services.\n"
+            return (
+                f"Invalid service '{service_name}'. Use 'ceph orch ls' to "
+                f"list available services.\n"
+            )
 
         # Report list of affected OSDs?
         if not force and service_name.startswith('osd.'):
@@ -2870,9 +3199,11 @@ Then run the following:
                 for h, ls in osds_msg.items():
                     msg += f'\thost {h}: {" ".join([f"osd.{id}" for id in ls])}'
                 raise OrchestratorError(
-                    f'If {service_name} is removed then the following OSDs will remain, --force to proceed anyway\n{msg}')
+                    f'If {service_name} is removed then the following OSDs '
+                    f'will remain, --force to proceed anyway\n{msg}'
+                )
 
-        found = self.spec_store.rm(service_name)
+        found = self.spec_store.rm(service_name, force_delete_data)
         if found and service_name.startswith('osd.'):
             self.spec_store.finally_rm(service_name)
         self._kick_serve_loop()
@@ -3290,8 +3621,10 @@ Then run the following:
         return previews_for_specs
 
     @forall_hosts
-    def _remove_daemons(self, name: str, host: str) -> str:
-        return CephadmServe(self)._remove_daemon(name, host)
+    def _remove_daemons(self, name: str, host: str, force_delete_data: bool = False) -> str:
+        # pass force_delete_data by keyword: third positional arg is no_post_remove
+        return CephadmServe(self)._remove_daemon(
+            name, host, force_delete_data=force_delete_data)
 
     def _check_pool_exists(self, pool: str, service_name: str) -> None:
         logger.info(f'Checking pool "{pool}" exists for service {service_name}')
@@ -3472,6 +3805,55 @@ Then run the following:
         for daemon in daemons:
             self.daemon_action(action='redeploy', daemon_name=daemon.daemon_name)
         return 'prometheus multi-cluster targets updated'
+
+    @handle_orch_error
+    def set_prometheus_remote_write(self, url: str, remote_write_allowed_metrics: List[str]) -> str:
+        if not url or not url.strip():
+            return 'Invalid URL. URL cannot be empty.'
+
+        try:
+            parsed_url = urlparse(url)
+            host = parsed_url.hostname
+
+            if parsed_url.scheme not in ('http', 'https'):
+                return 'Invalid URL. Scheme must be http or https.'
+            if not host:
+                return 'Invalid URL. Hostname is missing.'
+        except ValueError as e:
+            return f'Invalid url. {str(e)}'
+
+        prometheus_spec = cast(PrometheusSpec, self.spec_store['prometheus'].spec)
+        if not prometheus_spec:
+            return "Service prometheus not found\n"
+
+        if url == prometheus_spec.remote_write_url:
+            return f"Remote write URL '{url}' already exists.\n"
+
+        prometheus_spec.remote_write_url = url
+        prometheus_spec.remote_write_allowed_metrics = '|'.join(remote_write_allowed_metrics)
+
+        spec = ServiceSpec.from_json(prometheus_spec.to_json())
+        self.apply([spec], no_overwrite=False)
+
+        return 'prometheus remote write updated'
+
+    @handle_orch_error
+    def remove_prometheus_remote_write(self, url: str) -> str:
+        if not url or not url.strip():
+            return 'Invalid URL. URL cannot be empty.'
+
+        prometheus_spec = cast(PrometheusSpec, self.spec_store['prometheus'].spec)
+        if url == prometheus_spec.remote_write_url:
+            prometheus_spec.remote_write_url = ''
+            prometheus_spec.remote_write_allowed_metrics = ''
+        else:
+            return f"Remote write URL '{url}' does not exist.\n"
+        if not prometheus_spec:
+            return "Service prometheus not found\n"
+
+        spec = ServiceSpec.from_json(prometheus_spec.to_json())
+        self.apply([spec], no_overwrite=False)
+        return 'prometheus remote write removed'
 
     @handle_orch_error
     def set_alertmanager_access_info(self, user: str, password: str) -> str:
@@ -3906,17 +4288,55 @@ Then run the following:
 
     def _check_cert_source(self, spec: ServiceSpec) -> str:
         cert_warning = ''
+        # Warn the user when certificate_source is changing, as this will
+        # trigger a service reconfiguration that may cause client disconnections,
+        # CA trust chain changes, or temporary TLS downtime.
+        if spec.service_name() in self.spec_store:
+            old_spec = self.spec_store[spec.service_name()].spec
+            old_source = getattr(old_spec, 'certificate_source', None)
+            new_source = getattr(spec, 'certificate_source', None)
+            if old_source and new_source and old_source != new_source:
+                cert_warning = (
+                    f"\n\nWarning: 'certificate_source' changed from '{old_source}' to "
+                    f"'{new_source}' for service '{spec.service_name()}'.\n"
+                    f"This will trigger a service reconfiguration on the next reconciliation cycle, which may cause\n"
+                    f"temporary client disconnections and/or a change in the TLS certificate authority trust chain.\n"
+                )
+                self.log.warning(
+                    f"certificate_source changed from '{old_source}' to '{new_source}' "
+                    f"for service '{spec.service_name()}'. This will trigger a service "
+                    f"reconfiguration."
+                )
+
         if spec.is_using_certificates_source(CertificateSource.REFERENCE):
             svc = service_registry.get_service(spec.service_type)
             if svc.SCOPE == TLSObjectScope.SERVICE:
+                # If the service was previously configured with INLINE, the cert/key
+                # may exist in the certmgr store as non-editable (inline-saved).
+                # When switching to REFERENCE, those inline-saved entries must be
+                # removed to avoid "pinning" the service to the old inline values and
+                # to allow the user to provision editable entries via the certmgr CLI.
+                if self.cert_mgr.cert_exists(svc.cert_name, service_name=spec.service_name(), host=None) and \
+                        not self.cert_mgr.is_cert_editable(svc.cert_name, service_name=spec.service_name(), host=None):
+                    self.log.info(
+                        f"Removing inline-saved (non-editable) cert/key for '{spec.service_name()}' "
+                        f"before switching to '{CertificateSource.REFERENCE.value}'."
+                    )
+                    self.cert_mgr.rm_inline_saved_cert_key_pair(
+                        svc.cert_name,
+                        svc.key_name,
+                        service_name=spec.service_name(),
+                        host=None,
+                        ca_cert_name=getattr(svc, 'ca_cert_name', None),
+                    )
                 if not self.cert_mgr.cert_exists(svc.cert_name, service_name=spec.service_name(), host=None):
                     raise OrchestratorError(
                         f"\n\nSSL is configured with '{CertificateSource.REFERENCE.value}', but cannot find an entry for the service '{spec.service_name()}'"
                         f"\nunder the certificate '{svc.cert_name}' within the certmgr store. To set the certificate, use:\n"
-                        f"\n  > ceph orch certmgr cert set --cert-name {svc.cert_name} --service-name {spec.service_name()} -i <cert-key-pem-file> \n"
+                        f"\n  > ceph orch certmgr cert-key set --consumer {spec.service_type} --service-name {spec.service_name()} -i <cert-key-pem-file> \n"
                     )
             else:
-                cert_warning = (
+                cert_warning += (
                     f"\n\n\nWarning: SSL is configured with '{CertificateSource.REFERENCE.value}', and this service uses per-host certificates.\n\n"
                     f"To configure keys/certificates, run the following commands for each host daemons are deployed on:\n"
                     f"  > ceph orch certmgr cert set --cert-name {svc.cert_name} --service-name {spec.service_name()} --hostname <host>  -i <cert-file>\n"

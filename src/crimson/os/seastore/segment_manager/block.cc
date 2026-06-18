@@ -305,9 +305,11 @@ open_device_ret open_device(
     ).then([stat, &path, FNAME](auto file) mutable {
       return file.size().then([stat, file, &path, FNAME](auto size) mutable {
         stat.size = size;
-        // Use Seastar's DMA alignment requirement instead of stat's block_size
-        // to ensure writes are properly aligned for optimal performance
-        stat.block_size = file.disk_write_dma_alignment();
+        // Use Seastar's DMA alignment for optimal I/O alignment; clamp to
+        // laddr_t::UNIT_SIZE since SeaStore operates at 4 KiB granularity
+        // and rejects smaller device-reported block sizes.
+        stat.block_size = std::max<uint64_t>(file.disk_write_dma_alignment(),
+                                             laddr_t::UNIT_SIZE);
         INFO("path={} successful, size=0x{:x}, block_size=0x{:x}",
              path, stat.size, stat.block_size);
         return std::make_pair(file, stat);
@@ -518,9 +520,9 @@ SegmentManager::read_ertr::future<uint32_t> BlockSegmentManager::get_shard_nums(
   }).safe_then([](auto sb) {
     return read_ertr::make_ready_future<uint32_t>(sb.shard_num);
   }).handle_error(
-    crimson::ct_error::assert_all{
+    crimson::ct_error::assert_all(
       "Invalid error in BlockSegmentManager::get_shard_nums"
-    }
+    )
   );
 }
 
@@ -530,9 +532,9 @@ BlockSegmentManager::mount_ret BlockSegmentManager::mount()
     return seastar::do_for_each(local_device.mshard_devices, [](auto& mshard_device) {
       return mshard_device->shard_mount(
       ).handle_error(
-        crimson::ct_error::assert_all{
+        crimson::ct_error::assert_all(
           "Invalid error in BlockSegmentManager::mount"
-      });
+      ));
     });
   });
 }
@@ -596,9 +598,9 @@ BlockSegmentManager::mkfs_ret BlockSegmentManager::mkfs(
       return seastar::do_for_each(local_device.mshard_devices, [](auto& mshard_device) {
         return mshard_device->shard_mkfs(
         ).handle_error(
-          crimson::ct_error::assert_all{
+          crimson::ct_error::assert_all(
             "Invalid error in BlockSegmentManager::mkfs"
-        });
+        ));
       });
     });
   });

@@ -15,6 +15,7 @@
 
 #include "test/osd/PGBackendTestFixture.h"
 #include "common/errno.h"
+#include "crush/CrushWrapper.h"
 #include "messages/MOSDECSubOpWrite.h"
 #include "messages/MOSDECSubOpWriteReply.h"
 #include "messages/MOSDECSubOpRead.h"
@@ -650,7 +651,7 @@ int PGBackendTestFixture::read_object(
     ReplicatedBackend* rep_backend = dynamic_cast<ReplicatedBackend*>(primary_backend);
     ceph_assert(rep_backend != nullptr);
 
-    int result = rep_backend->objects_read_sync(
+    int result = rep_backend->objects_read_local(
       hoid,
       offset,
       length,

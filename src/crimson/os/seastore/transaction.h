@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <iostream>
 
 #include <boost/intrusive/list.hpp>
@@ -127,10 +128,6 @@ public:
   get_extent_ret get_extent(paddr_t addr, CachedExtentRef *out) {
     assert(addr.is_real_location() || addr.is_root());
     auto [result, ext] = do_get_extent(addr);
-    // placeholder in read-set must be in the retired-set
-    // at the same time, user should not see a placeholder.
-    assert(result != get_extent_ret::PRESENT ||
-           !is_retired_placeholder_type(ext->get_type()));
     if (out && result == get_extent_ret::PRESENT) {
       *out = ext;
     }
@@ -316,48 +313,6 @@ public:
     }
   }
 
-  void replace_placeholder(CachedExtent& placeholder, CachedExtent& extent) {
-    LOG_PREFIX(Transaction::replace_placeholder);
-    ceph_assert(!is_weak());
-
-    assert(is_retired_placeholder_type(placeholder.get_type()));
-    assert(!is_retired_placeholder_type(extent.get_type()));
-    assert(!is_root_type(extent.get_type()));
-    assert(extent.get_paddr() == placeholder.get_paddr());
-    assert(extent.get_paddr().is_absolute());
-    {
-      auto where = read_set.find(placeholder.get_paddr(), extent_cmp_t{});
-      if (unlikely(where == read_set.end())) {
-	SUBERRORT(seastore_t,
-	  "unable to find placeholder {}", *this, placeholder);
-	ceph_abort();
-      }
-      if (unlikely(where->ref.get() != &placeholder)) {
-	SUBERRORT(seastore_t,
-	  "inconsistent placeholder, current: {}; should-be: {}",
-	  *this, *where->ref.get(), placeholder);
-	ceph_abort();
-      }
-      placeholder.read_transactions.erase(
-	read_trans_set_t<Transaction>::s_iterator_to(*where));
-      where = read_set.erase(where);
-      // Note, the retired-placeholder is not removed from read_items after replace.
-      read_items.emplace_back(this, &extent);
-      auto it = read_set.insert_before(where, read_items.back());
-      extent.read_transactions.insert(const_cast<read_set_item_t<Transaction>&>(*it));
-#ifndef NDEBUG
-      num_replace_placeholder++;
-#endif
-    }
-    {
-      auto where = retired_set.find(&placeholder);
-      assert(where != retired_set.end());
-      assert(where->extent.get() == &placeholder);
-      where = retired_set.erase(where);
-      retired_set.emplace_hint(where, &extent, trans_id);
-    }
-  }
-
   auto get_delayed_alloc_list() {
     std::list<CachedExtentRef> ret;
     for (auto& extent : delayed_alloc_list) {
@@ -510,6 +465,25 @@ public:
     return conflicted;
   }
 
+  // Number of times this transaction was conflicted and replayed before
+  // finally committing. do_transaction_no_callbacks() (user MUTATE writes)
+  std::size_t get_num_replays() const {
+    return num_replays;
+  }
+
+  // Time spent in each sub-phase of submit_transaction, accumulated across retries
+  struct phase_durations_t {
+    std::chrono::steady_clock::duration reserve{0};         // enter reserve + epm reserve
+    std::chrono::steady_clock::duration ool_write{0};       // delayed + preallocated OOL writes
+    std::chrono::steady_clock::duration lba_update{0};      // update_lba_mappings
+    std::chrono::steady_clock::duration prepare_enter{0};   // enter(prepare) pipeline stage
+    std::chrono::steady_clock::duration prepare_record{0};  // prepare_record
+    std::chrono::steady_clock::duration journal{0};         // journal->submit_record (post-lock)
+  };
+  phase_durations_t &get_phase_durations() {
+    return phase_durations;
+  }
+
   auto &get_handle() {
     return handle;
   }
@@ -574,6 +548,7 @@ public:
     rewrite_stats = {};
     conflicted = false;
     need_wait_visibility = false;
+    force_rewrite_conflict = false;
     assert(backref_entries.empty());
     if (!has_reset) {
       has_reset = true;
@@ -692,8 +667,35 @@ public:
 
   btree_cursor_stats_t cursor_stats;
 
- bool need_wait_visibility = false;
+  bool need_wait_visibility = false;
+  bool force_rewrite_conflict = false;
 
+  using update_copied_lba_key_func_t =
+    std::function<void (Transaction&, laddr_t, paddr_t)>;
+  void new_lba_key_copied(
+    laddr_t src,
+    laddr_t dest,
+    update_copied_lba_key_func_t &&func) {
+    copied_lba_keys.emplace(src, dest);
+    if (!update_copied_lba_key) {
+      update_copied_lba_key = std::move(func);
+    }
+  }
+  void maybe_sync_copied_lba_key(laddr_t laddr, paddr_t paddr) {
+    if (likely(copied_lba_keys.empty())) {
+      return;
+    }
+    assert(update_copied_lba_key);
+    auto it = copied_lba_keys.find(laddr);
+    if (it == copied_lba_keys.end()) {
+      return;
+    }
+    laddr_t key = it->second;
+    update_copied_lba_key(*this, key, paddr);
+  }
+  RootBlockRef peek_root() {
+    return root;
+  }
 private:
   friend class Cache;
   friend Ref make_test_transaction();
@@ -701,9 +703,6 @@ private:
   void clear_read_set() {
     read_items.clear();
     assert(read_set.empty());
-#ifndef NDEBUG
-    num_replace_placeholder = 0;
-#endif
     // Automatically unlink this transaction from CachedExtent::read_transactions
   }
 
@@ -839,9 +838,6 @@ private:
    */
   read_extent_set_t<Transaction> read_set; ///< set of extents read by paddr
   std::list<read_set_item_t<Transaction>> read_items;
-#ifndef NDEBUG
-  size_t num_replace_placeholder = 0;
-#endif
 
   uint64_t fresh_backref_extents = 0; // counter of new backref extents
 
@@ -906,6 +902,10 @@ private:
 
   bool conflicted = false;
 
+  std::size_t num_replays = 0;
+
+  phase_durations_t phase_durations;
+
   bool has_reset = false;
 
   OrderingHandle handle;
@@ -921,6 +921,9 @@ private:
   backref_entry_refs_t backref_entries;
 
   cache_hint_t cache_hint = CACHE_HINT_TOUCH;
+
+  std::map<laddr_t, laddr_t> copied_lba_keys;
+  std::function<void (Transaction&, laddr_t, paddr_t)> update_copied_lba_key;
 };
 using TransactionRef = Transaction::Ref;
 
@@ -936,6 +939,33 @@ inline TransactionRef make_test_transaction() {
     CACHE_HINT_TOUCH)
   );
 }
+/**
+ * should_use_no_conflict_publish()
+ *
+ * Returns true when this (transaction source, extent type) pair should take
+ * the no-conflict publish path (i.e avoid invalidate-and-retry and use the
+ * committer + visibility hand-off).
+ *
+ * Currently true for:
+ *  - rewrite (background) transactions, for any non-root extent
+ *
+ *  To be expanded to:
+ *  - user (txn_manager) transactions that mutate LBA nodes
+ *  - Onode/Omap nodes
+ */
+constexpr bool should_use_no_conflict_publish(const Transaction &t,
+                                              extent_types_t ext_type) {
+  // keep classic handling for ROOT
+  if (is_root_type(ext_type)) {
+    return false;
+  }
+
+  // TODO: Extend this as support grows (e.g. Onode/OMAP nodes).
+  //       is_user_transaction(txn_type) && is_lba_node(ext_type)
+
+  return !t.force_rewrite_conflict && is_rewrite_transaction(t.get_src());
+}
+
 
 }
 

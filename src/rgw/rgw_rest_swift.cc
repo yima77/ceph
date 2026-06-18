@@ -294,7 +294,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_begin(bool has_buckets)
             s->user_acl);
     dump_errno(s);
     dump_header(s, "Accept-Ranges", "bytes");
-    end_header(s, NULL, NULL, NO_CONTENT_LENGTH, true);
+    end_header(s, this, NULL, NO_CONTENT_LENGTH, true);
   }
 
   if (! op_ret) {
@@ -393,7 +393,7 @@ void RGWListBuckets_ObjStore_SWIFT::send_response_end()
             s->user->get_max_buckets(),
             s->user_acl);
     dump_errno(s);
-    end_header(s, nullptr, nullptr, s->formatter->get_len(), true);
+    end_header(s, this, nullptr, s->formatter->get_len(), true);
   }
 
   if (sent_data || s->cct->_conf->rgw_swift_enforce_content_length) {
@@ -3255,4 +3255,18 @@ RGWHandler_REST* RGWRESTMgr_SWIFT_Info::get_handler(
   s->prot_flags |= RGW_REST_SWIFT;
   const auto& auth_strategy = auth_registry.get_swift();
   return new RGWHandler_REST_SWIFT_Info(auth_strategy);
+}
+
+int RGWHandler_REST_Bucket_SWIFT::error_handler(int err_no,
+						std::string *error_content,
+						optional_yield y)
+{
+  return website_handler->error_handler(err_no, error_content, y);
+}
+
+int RGWHandler_REST_Obj_SWIFT::error_handler(int err_no,
+					     std::string *error_content,
+					     optional_yield y)
+{
+  return website_handler->error_handler(err_no, error_content, y);
 }

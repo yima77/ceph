@@ -97,9 +97,9 @@ CyanStore::mount_ertr::future<> CyanStore::mount()
   return shard_stores.invoke_on_all([](auto &local_store) {
     return seastar::do_for_each(local_store.mshard_stores, [](auto& mshard_store) {
       return mshard_store->mount().handle_error(
-        crimson::ct_error::assert_all{
+        crimson::ct_error::assert_all(
           "Invalid error in CyanStore::mount"
-        });
+        ));
     });
   });
 }
@@ -583,6 +583,7 @@ seastar::future<> CyanStore::Shard::do_transaction_no_callbacks(
       }
       break;
       case Transaction::OP_TOUCH:
+      case Transaction::OP_TOUCH_TEMP:
       case Transaction::OP_CREATE:
       {
         coll_t cid = i.get_cid(op->cid);

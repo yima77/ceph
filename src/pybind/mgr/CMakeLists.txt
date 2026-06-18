@@ -22,6 +22,7 @@ set(mgr_modules
   alerts
   balancer
   cephadm
+  cli_api
   crash
   # dashboard (optional)
   devicehealth
@@ -59,5 +60,5 @@ set(mgr_modules
 install(DIRECTORY ${mgr_modules}
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes})
-install(FILES mgr_module.py mgr_util.py object_format.py cherrypy_mgr.py
+install(FILES mgr_module.py mgr_util.py object_format.py cherrypy_mgr.py ceph_secrets_client.py ceph_secrets_types.py
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr)

@@ -409,6 +409,16 @@ void ExtentCommitter::commit_state() {
   extent.on_state_commit();
 }
 
+void ExtentCommitter::maybe_sync_copied_lba_key() {
+  ceph_assert(extent.is_logical());
+  auto &lextent = static_cast<LogicalChildNode&>(extent);
+  auto &prior = *extent.prior_instance;
+  for (auto &item : prior.read_transactions) {
+    item.t->maybe_sync_copied_lba_key(
+      lextent.get_laddr(), lextent.get_paddr());
+  }
+}
+
 void ExtentCommitter::commit_and_share_paddr() {
   auto &prior = *extent.prior_instance;
   auto old_paddr = prior.get_prior_paddr_and_reset();
@@ -492,7 +502,7 @@ void ExtentCommitter::_share_prior_data_to_pending_versions()
 }
 
 void CachedExtent::new_committer(Transaction &t) {
-  ceph_assert(should_use_no_conflict_publish(t.get_src(), this->get_type()));
+  ceph_assert(should_use_no_conflict_publish(t, this->get_type()));
   ceph_assert(!committer);
   committer = new ExtentCommitter(*this, t);
   assert(prior_instance);

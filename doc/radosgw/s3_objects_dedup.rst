@@ -5,6 +5,9 @@ Full RGW Object Dedup
 Full RGW object deduplication adds ``radosgw-admin`` commands to remove
 duplicated RGW tail objects and to collect and report dedup statistics.
 
+These operations are also available through the `Admin Ops API <../radosgw/adminops/#dedup>`_
+under ``/{admin}/dedup``.
+
 
 Admin Commands
 ==============
@@ -32,6 +35,30 @@ Admin Commands
    RGW server during dedup, ``0`` means unlimited.
 - ``radosgw-admin dedup throttle --stat``:
    Displays dedup throttle setting.
+
+The ``dedup estimate`` and ``dedup exec`` commands also accept filter options:
+
+- ``--allow-bucket-list <file>``:
+   Path to a file listing bucket names to include (allowlist mode).
+   Only buckets listed in the file will be processed.
+   Mutually exclusive with ``--deny-bucket-list``.
+
+- ``--deny-bucket-list <file>``:
+   Path to a file listing bucket names to exclude (denylist mode).
+   All buckets except those listed in the file will be processed.
+   Mutually exclusive with ``--allow-bucket-list``.
+
+- ``--allow-storage-class-list <file>``:
+   Path to a file listing storage class names to include (allowlist mode).
+   Mutually exclusive with ``--deny-storage-class-list``.
+
+- ``--deny-storage-class-list <file>``:
+   Path to a file listing storage class names to exclude (denylist mode).
+   Mutually exclusive with ``--allow-storage-class-list``.
+
+**File format:** One name per line. Lines starting with or containing ``#``
+are treated as comments. Whitespace is ignored. The file must contain at least
+one valid name; an empty or all-comment file is rejected.
 
 
 Skipped Objects

@@ -326,13 +326,18 @@ if(WITH_BLUESTORE_PMEM)
 endif()
 
 CMAKE_DEPENDENT_OPTION(WITH_SPDK "Enable SPDK" OFF
-  "CMAKE_SYSTEM_PROCESSOR MATCHES i386|i686|amd64|x86_64|AMD64|aarch64" OFF)
+  "CMAKE_SYSTEM_PROCESSOR MATCHES i386|i686|amd64|x86_64|AMD64|aarch64|riscv64" OFF)
+option(WITH_SYSTEM_SPDK "Require a system SPDK instead of building bundled src/spdk" OFF)
 if(WITH_SPDK)
   if(NOT WITH_BLUESTORE)
     message(SEND_ERROR "Please enable WITH_BLUESTORE for using SPDK")
   endif()
-  include(BuildSPDK)
-  build_spdk()
+  if(WITH_SYSTEM_SPDK)
+    find_package(spdk REQUIRED)
+  else()
+    include(BuildSPDK)
+    build_spdk()
+  endif()
   set(HAVE_SPDK TRUE)
 endif(WITH_SPDK)
 
@@ -540,7 +545,14 @@ if(WITH_CATCH2)
   # Restore the original CPM settings in case someone else wants to use the module:
   set(CPM_USE_LOCAL_PACKAGES_ONLY, ${ORIG_CPM_USE_LOCAL_PACKAGES_ONLY})
 
-  message("-- Enabled Catch2 support")
+  # CPM skips the fetch silently if downloads are disabled,
+  # e.g. with FETCHCONTENT_FULLY_DISCONNECTED=ON on deb builds
+  if(NOT TARGET Catch2::Catch2WithMain)
+    message(WARNING "Catch2 unavailable, disabling Catch2 tests")
+    set(WITH_CATCH2 OFF)
+  else()
+    message("-- Enabled Catch2 support")
+  endif()
 endif()
 
 # enable breakpad unless win32 or power
@@ -731,6 +743,12 @@ if(sanitizers)
   string(REPLACE ";" " " sanitiers_compile_flags "${Sanitizers_COMPILE_OPTIONS}")
   string(APPEND CMAKE_EXE_LINKER_FLAGS " ${sanitiers_compile_flags}")
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${sanitiers_compile_flags}")
+endif()
+
+# Jerasure & GF-Complete
+option(WITH_SYSTEM_JERASURE "require and build with system jerasure and gf-complete" OFF)
+if(WITH_SYSTEM_JERASURE)
+  find_package(Jerasure REQUIRED)
 endif()
 
 # Rocksdb

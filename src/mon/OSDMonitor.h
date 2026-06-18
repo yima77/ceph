@@ -470,6 +470,9 @@ private:
   bool preprocess_pg_ready_to_merge(MonOpRequestRef op);
   bool prepare_pg_ready_to_merge(MonOpRequestRef op);
 
+  bool preprocess_pg_stop_merge(MonOpRequestRef op);
+  bool prepare_pg_stop_merge(MonOpRequestRef op);
+
   int _check_remove_pool(int64_t pool_id, const pg_pool_t &pool, std::ostream *ss);
   bool _check_become_tier(
       int64_t tier_pool_id, const pg_pool_t *tier_pool,
@@ -748,7 +751,7 @@ public:
   int enable_pool_ec_optimizations(pg_pool_t &pool,
                                    std::stringstream *ss,
                                    bool enable);
-  void enable_pool_ec_direct_reads(pg_pool_t &p);
+  void maybe_enable_pool_split_ops(pg_pool_t &p);
   int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                std::stringstream& ss);
 

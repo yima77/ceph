@@ -2424,7 +2424,7 @@ OSD::OSD(CephContext *cct_,
   dev_path(dev), journal_path(jdev),
   store_is_rotational(store->is_rotational()),
   trace_endpoint("0.0.0.0", 0, "osd"),
-  asok_hook(NULL),
+  asok_hook(nullptr),
   m_osd_pg_epoch_max_lag_factor(cct->_conf.get_val<double>(
 				  "osd_pg_epoch_max_lag_factor")),
   osd_compat(get_osd_compat_set()),
@@ -2441,7 +2441,7 @@ OSD::OSD(CephContext *cct_,
   heartbeat_dispatcher(this),
   op_tracker(cct, cct->_conf->osd_enable_op_tracker,
                   cct->_conf->osd_num_op_tracker_shard),
-  test_ops_hook(NULL),
+  test_ops_hook(nullptr),
   op_shardedwq(
     this,
     ceph::make_timespan(cct->_conf->osd_op_thread_timeout),
@@ -4651,6 +4651,15 @@ int OSD::shutdown()
       tick_timer_without_osd_lock.shutdown();
     }
 
+    // unregister commands
+    cct->get_admin_socket()->unregister_commands(asok_hook);
+    delete asok_hook;
+    asok_hook = nullptr;
+
+    cct->get_admin_socket()->unregister_commands(test_ops_hook);
+    delete test_ops_hook;
+    test_ops_hook = nullptr;
+
     osd_lock.unlock();
     utime_t  start_time_osd_drain = ceph_clock_now();
 
@@ -4705,11 +4714,11 @@ int OSD::shutdown()
   // unregister commands
   cct->get_admin_socket()->unregister_commands(asok_hook);
   delete asok_hook;
-  asok_hook = NULL;
+  asok_hook = nullptr;
 
   cct->get_admin_socket()->unregister_commands(test_ops_hook);
   delete test_ops_hook;
-  test_ops_hook = NULL;
+  test_ops_hook = nullptr;
 
   osd_lock.unlock();
 
@@ -6469,6 +6478,12 @@ void OSD::tick_without_osd_lock()
   }
 
   if (is_active()) {
+    constexpr uint_fast16_t snap_trim_scan_interval = 5;
+    if (++trim_queue_length_countdown >= snap_trim_scan_interval) {
+      trim_queue_length_countdown = 0;
+      service.snap_trim_queue_total =
+	service.calc_snap_trim_queue_total();
+    }
     service.get_scrub_services().initiate_scrub(service.is_recovery_active());
     service.promote_throttle_recalibrate();
     resume_creating_pg();
@@ -7889,6 +7904,22 @@ std::optional<PGLockWrapper> OSDService::get_locked_pg(spg_t pgid)
   }
 }
 
+
+uint64_t OSDService::calc_snap_trim_queue_total()
+{
+  std::vector<spg_t> pgids;
+  osd->_get_pgids(&pgids);
+  uint64_t total = 0;
+  for (auto& pgid : pgids) {
+    if (auto locked_pg = get_locked_pg(pgid)) {
+      const auto& pg = locked_pg->pg();
+      if (pg->is_primary()) {
+	total += pg->get_snap_trimq_size();
+      }
+    }
+  }
+  return total;
+}
 
 MPGStats* OSD::collect_pg_stats()
 {

@@ -113,7 +113,7 @@ PGBackend::decode_metadata2(
       oid);
     return tl::unexpected(
       ErrorHelper<load_metadata_ertr>::to_error(
-        crimson::ct_error::object_corrupted::make()));
+        crimson::ct_error::enoent::make()));
   }
 
   if (oid.is_head()) {
@@ -170,7 +170,9 @@ PGBackend::load_metadata(const hobject_t& oid)
           return ErrorHelper<load_metadata_ertr>\
 	    ::from_error<PGBackend::loaded_object_md_t::ref>(maybe_decoded.error());
         }
-      }, crimson::ct_error::enoent::handle([oid] {
+      }
+    ).handle_error_interruptible(
+      crimson::ct_error::enoent::handle([oid] {
         logger().debug(
           "load_metadata: object {} doesn't exist, returning empty metadata",
           oid);
@@ -181,7 +183,9 @@ PGBackend::load_metadata(const hobject_t& oid)
               false),
             oid.is_head() ? (new crimson::osd::SnapSetContext(oid)) : nullptr
           });
-      }));
+      }),
+      load_metadata_iertr::pass_further{}
+    );
 }
 
 static inline bool _read_verify_data(
@@ -613,15 +617,15 @@ void PGBackend::truncate_update_size_and_usage(object_stat_sum_t& delta_stats,
   }
 }
 
-static bool is_offset_and_length_valid(
-  const std::uint64_t offset,
-  const std::uint64_t length)
+bool PGBackend::is_offset_and_length_valid(
+    const std::uint64_t offset,
+    const std::uint64_t length) const
 {
-  if (const std::uint64_t max = local_conf()->osd_max_object_size;
+  if (const std::uint64_t max = store.f_store.get_max_object_size();
       offset >= max || length > max || offset + length > max) {
-    logger().debug("{} osd_max_object_size: {}, offset: {}, len: {}; "
-                   "Hard limit of object size is 4GB",
-                   __func__, max, offset, length);
+    logger().debug("{} max_object_size: {}, offset: {}, len: {}; "
+        "Hard limit of object size is 4GB",
+        __func__, max, offset, length);
     return false;
   } else {
     return true;
@@ -878,7 +882,7 @@ PGBackend::rollback_iertr::future<> PGBackend::rollback(
       );
     }),
     rollback_ertr::pass_further{},
-    crimson::ct_error::assert_all{"unexpected error in rollback"}
+    crimson::ct_error::assert_all("unexpected error in rollback")
   );
 }
 
@@ -1018,16 +1022,12 @@ PGBackend::remove(ObjectState& os, ceph::os::Transaction& txn,
   int num_bytes)
 {
   if (!os.exists) {
-    return crimson::ct_error::enoent::make();
-  }
-
-  if (!os.exists) {
     logger().debug("{} {} does not exist",__func__, os.oi.soid);
-    return seastar::now();
+    return crimson::ct_error::enoent::make();
   }
   if (whiteout && os.oi.is_whiteout()) {
     logger().debug("{} whiteout set on {} ",__func__, os.oi.soid);
-    return seastar::now();
+    return crimson::ct_error::enoent::make();
   }
   txn.remove(coll->get_cid(),
 	     ghobject_t{os.oi.soid, ghobject_t::NO_GEN, get_shard()});
@@ -1855,9 +1855,8 @@ PGBackend::tmapup_iertr::future<> PGBackend::tmapup(
       return seastar::make_ready_future<bufferlist>();
     }),
     PGBackend::write_iertr::pass_further{},
-    crimson::ct_error::assert_all{fmt::format(
-      "read error in mutate_object_contents of {}", os.oi.soid).c_str()
-    }).si_then([this, &os, &osd_op, &txn,
+    crimson::ct_error::assert_all(
+      "read error in mutate_object_contents of {}", os.oi.soid)).si_then([this, &os, &osd_op, &txn,
 	     &delta_stats, &osd_op_params]
 	    (auto &&bl) mutable -> PGBackend::tmapup_iertr::future<> {
     auto result = crimson::common::do_tmap_up(

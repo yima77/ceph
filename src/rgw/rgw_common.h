@@ -191,6 +191,10 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_CRYPT_CONTEXT  RGW_ATTR_CRYPT_PREFIX "context"
 #define RGW_ATTR_CRYPT_DATAKEY  RGW_ATTR_CRYPT_PREFIX "datakey"
 #define RGW_ATTR_CRYPT_PARTS    RGW_ATTR_CRYPT_PREFIX "part-lengths"
+#define RGW_ATTR_CRYPT_PART_NUMS RGW_ATTR_CRYPT_PREFIX "part-numbers"
+#define RGW_ATTR_CRYPT_SALT     RGW_ATTR_CRYPT_PREFIX "salt"
+#define RGW_ATTR_CRYPT_ORIGINAL_SIZE RGW_ATTR_CRYPT_PREFIX "original-size"
+#define RGW_ATTR_CRYPT_PREFETCH_ALIGN RGW_ATTR_CRYPT_PREFIX "prefetch-align"
 
 /* SSE-S3 Encryption Attributes */
 #define RGW_ATTR_BUCKET_ENCRYPTION_PREFIX RGW_ATTR_PREFIX "sse-s3."
@@ -242,6 +246,7 @@ static inline const char* to_mime_type(const RGWFormat f)
 #define RGW_REST_STS            0x10
 #define RGW_REST_IAM            0x20
 #define RGW_REST_SNS            0x40
+#define RGW_REST_S3CONTROL      0x80
 
 inline constexpr const char* RGW_REST_IAM_XMLNS =
     "https://iam.amazonaws.com/doc/2010-05-08/";
@@ -1405,7 +1410,8 @@ struct req_state : DoutPrefixProvider {
 
   rgw::IAM::Environment env;
   boost::optional<rgw::IAM::Policy> iam_policy;
-  boost::optional<PublicAccessBlockConfiguration> bucket_access_conf;
+  // PublicAccessBlock configuration that applies to this request
+  PublicAccessBlockConfiguration public_access_block;
   rgw::s3::ObjectOwnership bucket_object_ownership = rgw::s3::ObjectOwnership::ObjectWriter;
   std::vector<rgw::IAM::Policy> iam_identity_policies;
 
@@ -1725,7 +1731,7 @@ struct perm_state_base {
   rgw::s3::ObjectOwnership bucket_object_ownership;
   int perm_mask;
   bool defer_to_bucket_acls;
-  boost::optional<PublicAccessBlockConfiguration> bucket_access_conf;
+  PublicAccessBlockConfiguration public_access_block;
 
   perm_state_base(CephContext *_cct,
                   const rgw::IAM::Environment& _env,
@@ -1734,7 +1740,7 @@ struct perm_state_base {
                   rgw::s3::ObjectOwnership bucket_object_ownership,
                   int _perm_mask,
                   bool _defer_to_bucket_acls,
-                  boost::optional<PublicAccessBlockConfiguration> _bucket_access_conf = boost::none) :
+                  PublicAccessBlockConfiguration _public_access_block = {}) :
                                                 cct(_cct),
                                                 env(_env),
                                                 identity(_identity),
@@ -1742,7 +1748,7 @@ struct perm_state_base {
                                                 bucket_object_ownership(bucket_object_ownership),
                                                 perm_mask(_perm_mask),
                                                 defer_to_bucket_acls(_defer_to_bucket_acls),
-                                                bucket_access_conf(_bucket_access_conf)
+                                                public_access_block(_public_access_block)
   {}
 
   virtual ~perm_state_base() {}

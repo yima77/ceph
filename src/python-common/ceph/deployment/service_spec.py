@@ -41,7 +41,7 @@ from ceph.deployment.hostspec import (
 )
 from ceph.deployment.utils import unwrap_ipv6, valid_addr, verify_non_negative_int
 from ceph.deployment.utils import verify_positive_int, verify_non_negative_number
-from ceph.deployment.utils import verify_boolean, verify_enum, verify_int
+from ceph.deployment.utils import verify_boolean, verify_enum, verify_int, verify_non_empty_string
 from ceph.deployment.utils import parse_combined_pem_file, validate_port, validate_unique_ports
 from ceph.cephadm.d3n_types import D3NCacheSpec, D3NCacheError
 from ceph.utils import is_hex
@@ -999,6 +999,8 @@ class ServiceSpec(object):
                  preview_only: bool = False,
                  networks: Optional[List[str]] = None,
                  targets: Optional[List[str]] = None,
+                 remote_write_url: Optional[str] = None,
+                 remote_write_allowed_metrics: Optional[str] = None,
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
@@ -1047,6 +1049,8 @@ class ServiceSpec(object):
         #: :ref:`cephadm-rgw-networks` and :ref:`cephadm-mgr-networks`.
         self.networks: List[str] = networks or []
         self.targets: List[str] = targets or []
+        self.remote_write_url = remote_write_url
+        self.remote_write_allowed_metrics = remote_write_allowed_metrics
 
         self.config: Optional[Dict[str, str]] = None
         if config:
@@ -2801,6 +2805,7 @@ class OAuth2ProxySpec(ServiceSpec):
 
     def validate(self) -> None:
         super(OAuth2ProxySpec, self).validate()
+
         required_values = {
             'provider_display_name': self.provider_display_name,
             'oidc_issuer_url': self.oidc_issuer_url,
@@ -2817,23 +2822,20 @@ class OAuth2ProxySpec(ServiceSpec):
                 + ', '.join(missing_required_fields)
                 + '.'
             )
-        self._validate_non_empty_string(self.provider_display_name, "provider_display_name")
-        self._validate_non_empty_string(self.client_id, "client_id")
-        self._validate_non_empty_string(self.client_secret, "client_secret")
+        verify_non_empty_string(self.provider_display_name, "provider_display_name")
+        verify_non_empty_string(self.client_id, "client_id")
+        verify_non_empty_string(self.client_secret, "client_secret")
+
         self._validate_cookie_secret(self.cookie_secret)
         self._validate_url(self.oidc_issuer_url, "oidc_issuer_url")
         if self.redirect_url is not None:
             self._validate_url(self.redirect_url, "redirect_url")
         if self.scope is not None:
-            self._validate_non_empty_string(self.scope, "scope")
+            verify_non_empty_string(self.scope, "scope")
         if self.email_domains is not None:
             self._validate_domain_name(self.email_domains, "email_domains")
         if self.https_address is not None:
             self._validate_https_address(self.https_address)
-
-    def _validate_non_empty_string(self, value: Optional[str], field_name: str) -> None:
-        if not value or not isinstance(value, str) or not value.strip():
-            raise SpecValidationError(f"Invalid {field_name}: Must be a non-empty string.")
 
     def _validate_url(self, url: Optional[str], field_name: str) -> None:
         from urllib.parse import urlparse
@@ -3108,6 +3110,8 @@ class MonitoringSpec(ServiceSpec):
                  preview_only: bool = False,
                  port: Optional[int] = None,
                  targets: Optional[List[str]] = None,
+                 remote_write_url: Optional[str] = None,
+                 remote_write_allowed_metrics: Optional[str] = None,
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
@@ -3122,7 +3126,9 @@ class MonitoringSpec(ServiceSpec):
             preview_only=preview_only, config=config,
             networks=networks, extra_container_args=extra_container_args,
             extra_entrypoint_args=extra_entrypoint_args,
-            custom_configs=custom_configs, targets=targets)
+            custom_configs=custom_configs, targets=targets,
+            remote_write_url=remote_write_url,
+            remote_write_allowed_metrics=remote_write_allowed_metrics)
 
         self.service_type = service_type
         self.port = port
@@ -3295,6 +3301,8 @@ class PrometheusSpec(MonitoringSpec):
                  retention_time: Optional[str] = None,
                  retention_size: Optional[str] = None,
                  targets: Optional[List[str]] = None,
+                 remote_write_url: Optional[str] = None,
+                 remote_write_allowed_metrics: Optional[str] = None,
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
@@ -3306,7 +3314,8 @@ class PrometheusSpec(MonitoringSpec):
             ssl=ssl, certificate_source=certificate_source,
             preview_only=preview_only, config=config, networks=networks, port=port, targets=targets,
             extra_container_args=extra_container_args, extra_entrypoint_args=extra_entrypoint_args,
-            custom_configs=custom_configs)
+            custom_configs=custom_configs, remote_write_url=remote_write_url,
+            remote_write_allowed_metrics=remote_write_allowed_metrics)
 
         self.retention_time = retention_time.strip() if retention_time else None
         self.retention_size = retention_size.strip() if retention_size else None
@@ -3644,8 +3653,7 @@ class TunedProfileSpec():
         if 'profile_name' not in spec:
             raise SpecValidationError('Tuned profile spec must include "profile_name" field')
         data['profile_name'] = spec['profile_name']
-        if not isinstance(data['profile_name'], str):
-            raise SpecValidationError('"profile_name" field must be a string')
+        verify_non_empty_string(data['profile_name'], "profile_name")
         if 'placement' in spec:
             data['placement'] = PlacementSpec.from_json(spec['placement'])
         if 'settings' in spec:
