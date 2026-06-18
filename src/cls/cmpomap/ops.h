@@ -158,36 +158,6 @@ inline void decode(cmp_rm_keys2_op& o, ceph::bufferlist::const_iterator& bl)
   DECODE_FINISH(bl);
 }
 
-struct cmp_incr_op {
-  Op comparison;
-  ComparisonMap cmp_values;
-  int64_t incr;
-  std::optional<uint64_t> default_value;
-  std::string incr_key;
-};
-
-inline void encode(const cmp_incr_op& o, ceph::bufferlist& bl, uint64_t f=0)
-{
-  ENCODE_START(1, 1, bl);
-  encode(o.comparison, bl);
-  encode(o.cmp_values, bl);
-  encode(o.incr, bl);
-  encode(o.default_value, bl);
-  encode(o.incr_key, bl);
-  ENCODE_FINISH(bl);
-}
-
-inline void decode(cmp_incr_op& o, ceph::bufferlist::const_iterator& bl)
-{
-  DECODE_START(1, bl);
-  decode(o.comparison, bl);
-  decode(o.cmp_values, bl);
-  decode(o.incr, bl);
-  decode(o.default_value, bl);
-  decode(o.incr_key, bl);
-  DECODE_FINISH(bl);
-}
-
 struct ClassId {
   static constexpr auto name = "cmpomap";
 };
@@ -197,7 +167,6 @@ constexpr auto cmp_set_vals = ClsMethod<RdWrTag, ClassId>("cmp_set_vals");
 constexpr auto cmp_set_vals2 = ClsMethod<RdWrTag, ClassId>("cmp_set_vals2");
 constexpr auto cmp_rm_keys = ClsMethod<RdWrTag, ClassId>("cmp_rm_keys");
 constexpr auto cmp_rm_keys2 = ClsMethod<RdWrTag, ClassId>("cmp_rm_keys2");
-constexpr auto cmp_incr = ClsMethod<RdWrTag, ClassId>("cmp_incr");
 }
 
 } // namespace cls::cmpomap

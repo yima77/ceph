@@ -407,82 +407,6 @@ static int cmp_rm_keys2(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   return 0;
 }
 
-static int cmp_incr(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
-{
-  cmp_incr_op op;
-  try {
-    auto p = in->cbegin();
-    decode(op, p);
-  } catch (const buffer::error&) {
-    CLS_LOG(1, "ERROR: %s(): failed to decode input", __func__);
-    return -EINVAL;
-  }
-
-  // collect the keys we need to read
-  std::set<std::string> keys;
-  for (const auto& kv : op.cmp_values) {
-    keys.insert(kv.first);
-  }
-
-  // read the values for each key to compare
-  std::map<std::string, bufferlist> values;
-  int r = cls_cxx_map_get_vals_by_keys(hctx, keys, &values);
-  if (r < 0) {
-    CLS_LOG(4, "ERROR: %s() failed to read values r=%d", __func__, r);
-    return r;
-  }
-
-  r = compare_all_values_by_mode(Mode::U64, op.comparison, op.cmp_values, values, op.default_value);
-  if (r <= 0) {
-    if (r == 0) {
-      return -ECANCELED;
-    }
-    return r;
-  }
-
-  // Successful comparison, update value
-  values.clear();
-  std::set<std::string> incr_key_set = {op.incr_key};
-  r = cls_cxx_map_get_vals_by_keys(hctx, incr_key_set, &values);
-  if (r < 0) {
-    CLS_LOG(4, "ERROR: %s() failed to read value to update r=%d", __func__, r);
-    return r;
-  }
-
-  uint64_t value = 0; // default value for missing key
-  if (!values.empty() && values.begin()->first == op.incr_key) {
-    try {
-      auto p = values.begin()->second.cbegin();
-      using ceph::decode;
-      decode(value, p);
-    } catch (const buffer::error&) {
-      // failures to decode existing values are reported as EIO
-      return -EIO;
-    }
-  } else if (op.default_value) {
-    value = *op.default_value;
-  }
-
-  CLS_LOG(20, "%s(): update value=%" PRIu64 " with delta=%" PRId64, __func__, value, op.incr);
-  value += op.incr;
-  bufferlist value_bl;
-  encode(value, value_bl);
-
-  ValueMap new_values = { {op.incr_key, value_bl} };
-
-  r = cls_cxx_map_set_vals(hctx, &new_values);
-  if (r < 0) {
-    CLS_LOG(10, "%s() failed to update key=%s r=%d", __func__,
-            op.incr_key.c_str(), r);
-    return r;
-  }
-  CLS_LOG(20, "%s() updated key=%s to value=%" PRIu64, __func__, op.incr_key.c_str(), value);
-
-  // Return the updated value in the output buffer
-  encode(value, *out);
-  return 0;
-}
-
 CLS_INIT(cmpomap)
 {
   CLS_LOG(1, "Loaded cmpomap class!");
@@ -493,7 +417,6 @@ CLS_INIT(cmpomap)
   cls_method_handle_t h_cmp_set_vals2;
   cls_method_handle_t h_cmp_rm_keys;
   cls_method_handle_t h_cmp_rm_keys2;
-  cls_method_handle_t h_cmp_incr;
 
   using namespace cls::cmpomap;
   cls_register(ClassId::name, &h_class);
@@ -504,5 +427,4 @@ CLS_INIT(cmpomap)
   cls.register_cxx_method(method::cmp_set_vals2, cmp_set_vals2, &h_cmp_set_vals2);
   cls.register_cxx_method(method::cmp_rm_keys,   cmp_rm_keys,   &h_cmp_rm_keys);
   cls.register_cxx_method(method::cmp_rm_keys2,  cmp_rm_keys2,  &h_cmp_rm_keys2);
-  cls.register_cxx_method(method::cmp_incr,      cmp_incr,      &h_cmp_incr);
 }
