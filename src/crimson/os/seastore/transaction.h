@@ -555,6 +555,8 @@ public:
     }
     get_handle().exit();
     views.clear();
+    copied_lba_keys.clear();
+    update_copied_lba_key = nullptr;
   }
 
   bool did_reset() const {
@@ -671,7 +673,7 @@ public:
   bool force_rewrite_conflict = false;
 
   using update_copied_lba_key_func_t =
-    std::function<void (Transaction&, laddr_t, paddr_t)>;
+    std::function<void (laddr_t, paddr_t)>;
   void new_lba_key_copied(
     laddr_t src,
     laddr_t dest,
@@ -691,7 +693,7 @@ public:
       return;
     }
     laddr_t key = it->second;
-    update_copied_lba_key(*this, key, paddr);
+    update_copied_lba_key(key, paddr);
   }
   RootBlockRef peek_root() {
     return root;
@@ -923,7 +925,7 @@ private:
   cache_hint_t cache_hint = CACHE_HINT_TOUCH;
 
   std::map<laddr_t, laddr_t> copied_lba_keys;
-  std::function<void (Transaction&, laddr_t, paddr_t)> update_copied_lba_key;
+  update_copied_lba_key_func_t update_copied_lba_key;
 };
 using TransactionRef = Transaction::Ref;
 

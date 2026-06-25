@@ -143,7 +143,6 @@ EOM
     local cxx_compiler="${discovered_cxx_compiler}"
     local c_compiler="${discovered_c_compiler}"
     local cmake_opts
-    cmake_opts+=" -DWITH_ASAN=ON"
     cmake_opts+=" -DCMAKE_CXX_COMPILER=$cxx_compiler -DCMAKE_C_COMPILER=$c_compiler"
     cmake_opts+=" -DENABLE_GIT_VERSION=OFF"
     cmake_opts+=" -DWITH_GTEST_PARALLEL=ON"
@@ -191,6 +190,10 @@ function build() {
     ci_debug "Running cmake"
     $DRY_RUN cmake --build . $targets -- $BUILD_MAKEOPTS || return 1
     $DRY_RUN ccache -s # print the ccache statistics to evaluate the efficiency
+    # print sccache stats too when built with WITH_SCCACHE
+    if type sccache > /dev/null 2>&1; then
+        $DRY_RUN sccache --show-stats
+    fi
 }
 
 DEFAULT_MAKEOPTS=${DEFAULT_MAKEOPTS:--j$(get_processors)}
